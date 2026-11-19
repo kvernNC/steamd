@@ -57,6 +57,11 @@ check "gestionnaire systemd utilisateur dans le groupe input" "redémarrer le PC
 echo "== Service"
 check "steamd.service activé" "systemctl --user enable steamd.service" systemctl --user -q is-enabled steamd.service
 check "steamd.service actif" "journalctl --user -u steamd -e" systemctl --user -q is-active steamd.service
+if [[ ${VAAPI_STRICT_RC:-false} == true ]]; then
+    sp=$(pgrep -u "$UID" -x steam | head -n1)
+    check "libsteamd-vaapi chargée dans Steam (VAAPI_STRICT_RC)" "le runtime Steam a peut-être retiré LD_PRELOAD : journalctl --user -u steamd | grep steamd-vaapi" \
+        grep -q libsteamd-vaapi "/proc/${sp:-0}/maps"
+fi
 
 echo "== Réseau"
 # Les deux Steam visent les mêmes ports : ils doivent appartenir au cgroup de steamd

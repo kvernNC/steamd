@@ -6,5 +6,6 @@ STEAM_CAPTURE=pipewire-dmabuf   # pipewire-dmabuf | pipewire | none
 GAMESCOPE_EXTRA_ARGS=""         # ex. "--verbose"
 STEAM_EXTRA_ARGS=""
 ENCODER=""                      # hardware | software (x264) | vide = réglage de l'UI ; software conseillé sur GPU AMD
+VAAPI_STRICT_RC=false           # true : encodeur matériel en CBR avec tampon d'une image (option stricte AMD de Sunshine)
 # HOME dédié du client Steam de steamd (distinct du Steam du bureau)
 #STEAMD_HOME="$HOME/.local/share/steamd-home"

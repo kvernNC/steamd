@@ -3,15 +3,21 @@ pkgname=steamd
 pkgver=0.1.0
 pkgrel=1
 pkgdesc="Steam headless dans gamescope en service utilisateur, pour Steam Remote Play"
-arch=('any')
+arch=('x86_64')
 license=('MIT')
 depends=('bash' 'gamescope' 'steam' 'pipewire' 'pipewire-pulse' 'wireplumber' 'systemd')
+makedepends=('gcc' 'libva')
 backup=()
 install=steamd.install
+
+build() {
+    cc $CFLAGS -fPIC -shared $LDFLAGS -o "$srcdir/libsteamd-vaapi.so" "$startdir/../../src/steamd-vaapi.c" -ldl -lpthread
+}
 
 package() {
     local src="$startdir/../.."
 
+    install -Dm755 "$srcdir/libsteamd-vaapi.so" "$pkgdir/usr/lib/steamd/libsteamd-vaapi.so"
     install -Dm755 -t "$pkgdir/usr/bin" \
         "$src"/bin/steamd-{launch,doctor,setup}
 

@@ -16,6 +16,11 @@ SHARE="${XDG_DATA_HOME:-$HOME/.local/share}/steamd"
 echo "→ scripts dans $BIN"
 install -Dm755 -t "$BIN" bin/steamd-launch bin/steamd-doctor bin/steamd-setup
 install -Dm644 config/steamd.conf.example "$SHARE/steamd.conf.example"
+if cc -O2 -Wall -fPIC -shared -o "$SHARE/libsteamd-vaapi.so" src/steamd-vaapi.c -ldl -lpthread; then
+    echo "→ libsteamd-vaapi.so compilée (VAAPI_STRICT_RC)"
+else
+    echo "Attention : libsteamd-vaapi.so non compilée (sudo pacman -S gcc libva), VAAPI_STRICT_RC indisponible" >&2
+fi
 
 echo "→ unités dans $UNITS"
 mkdir -p "$UNITS"

@@ -8,12 +8,18 @@ set -euo pipefail
 
 CONF="${XDG_CONFIG_HOME:-$HOME/.config}/steamd/steamd.conf"
 WIDTH=1280 HEIGHT=800 REFRESH=60 STEAM_CAPTURE=pipewire-dmabuf
-GAMESCOPE_EXTRA_ARGS="" STEAM_EXTRA_ARGS="" ENCODER=""
+GAMESCOPE_EXTRA_ARGS="" STEAM_EXTRA_ARGS="" ENCODER="" VAAPI_STRICT_RC=false
 STEAMD_HOME="${XDG_DATA_HOME:-$HOME/.local/share}/steamd-home"
 # shellcheck source=/dev/null
 [[ -r $CONF ]] && source "$CONF"
 
 log() { echo "steamd: $*" >&2; }
+
+# Bibliothèque de contrôle de débit VA-API (src/steamd-vaapi.c), cherchée avant le changement de HOME
+vaapi_lib=""
+for f in "${XDG_DATA_HOME:-$HOME/.local/share}/steamd/libsteamd-vaapi.so" /usr/lib/steamd/libsteamd-vaapi.so; do
+    [[ -r $f ]] && { vaapi_lib=$f; break; }
+done
 
 mkdir -p "$STEAMD_HOME"
 export HOME=$STEAMD_HOME
@@ -58,6 +64,18 @@ case ${1:-} in
 esac
 
 set_encoder
+
+# Le client Steam tourne dans le conteneur du runtime : la bibliothèque doit être sous son HOME
+if [[ $VAAPI_STRICT_RC == true ]]; then
+    if [[ -z $vaapi_lib ]]; then
+        log "VAAPI_STRICT_RC : libsteamd-vaapi.so introuvable (réinstaller steamd)"
+    else
+        install -Dm644 "$vaapi_lib" "$HOME/.local/lib/steamd/libsteamd-vaapi.so"
+        export LD_PRELOAD="$HOME/.local/lib/steamd/libsteamd-vaapi.so${LD_PRELOAD:+:$LD_PRELOAD}"
+        export STEAMD_VA_FPS=$REFRESH STEAMD_VA_DEBUG=1
+        if [[ $ENCODER == software ]]; then log "VAAPI_STRICT_RC sans effet avec ENCODER=software"; fi
+    fi
+fi
 
 case $STEAM_CAPTURE in
     pipewire-dmabuf) capture=(-pipewire-dmabuf) ;;
