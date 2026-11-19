@@ -111,13 +111,14 @@ STEAM_EXTRA_ARGS=""
 Dans la session de bureau, le Steam du bureau peut rester ouvert :
 
 1. `systemctl --user stop steamd`, puis `steamd-launch --setup` : le client steamd s'ouvre en fenêtre.
-2. Se connecter (Steam Guard) et activer Remote Play.
+2. Le Steam du bureau doit être fermé pendant cette configuration, sinon il garde les ports de Remote Play. Se connecter (Steam Guard) et activer Remote Play.
 3. Paramètres > Stockage : ajouter la bibliothèque du bureau (`~/.local/share/Steam`, ou le disque de jeux). Steam reconnaît les jeux déjà installés.
 4. Paramètres > Téléchargements : limiter les mises à jour à une plage horaire où le PC est éteint. C'est le Steam du bureau qui fait les mises à jour, pour éviter que deux clients mettent à jour le même jeu en même temps.
-5. Connecter le Deck une première fois et saisir le PIN d'appairage dans cette fenêtre.
-6. Quitter complètement ce client, puis `systemctl --user start steamd`.
+5. Paramètres > Pré-mise en cache des shaders : désactiver la pré-mise en cache et le traitement Vulkan en arrière-plan. Le bureau construit déjà les caches dans `steamapps/shadercache` de la bibliothèque partagée. Sans ce réglage, ils sont retéléchargés en double, et un traitement en cours bloque le lancement des jeux depuis le Deck.
+6. Appairer le Deck dans cette fenêtre. En headless, le PIN ne peut pas être saisi, car aucun écran n'affiche la demande.
+7. Quitter complètement ce client, puis `systemctl --user start steamd`.
 
-Côté bureau : désactiver Remote Play dans le Steam du bureau, pour que le Deck ne voie qu'un seul hôte.
+Côté bureau : désactiver Remote Play (Paramètres > Remote Play) et les transferts de jeux sur le réseau local (Paramètres > Téléchargements), puis relancer Steam. Les deux clients visent les mêmes ports (UDP 27036, TCP 27036-27037), et le premier démarré les garde. Dans ce cas, le Deck ne voit pas steamd. `steamd-doctor` vérifie à qui appartiennent ces ports.
 
 ## Plan de test
 
@@ -137,7 +138,8 @@ Côté bureau : désactiver Remote Play dans le Steam du bureau, pour que le Dec
 - **Écran noir avec le son qui passe** : problème déjà signalé avec le backend headless de gamescope. Essayer les autres modes de capture Steam, vérifier la version de gamescope, et lancer gamescope avec ses logs détaillés.
 - **Manettes inertes** : droits sur `/dev/uinput`, à vérifier avec `steamd-doctor`.
 - **Pas d'audio** : PipeWire utilisateur pas démarré sans session, à vérifier avec `systemctl --user status pipewire`.
-- **Steam démarre mais l'hôte n'apparaît pas sur le Deck** : pare-feu (UDP 27031-27036, TCP 27036-27037) ou Remote Play désactivé.
+- **Steam démarre mais l'hôte n'apparaît pas sur le Deck** : le Steam du bureau garde les ports (voir les prérequis), un pare-feu bloque (UDP 27031-27036, TCP 27036-27037), ou Remote Play est désactivé dans le client steamd.
+- **Le Deck demande un appairage** : le faire avec `steamd-launch --setup`, service arrêté.
 
 ## Critères de fin pour la v1
 
