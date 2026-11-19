@@ -289,7 +289,11 @@ fi
 
 if [[ $notify == true ]]; then
 	if have notify-send; then
-		ok "notify-send présent (notification si une session s'ouvre pendant une partie Remote Play)"
+		if notify-send --help 2>&1 | grep -q -- '--action'; then
+			ok "notify-send présent, avec boutons d'action (popup « Fermer la partie et ouvrir Steam ici »)"
+		else
+			warn "notify-send trop ancien pour les boutons d'action : simple notification" "mettre à jour libnotify (>= 0.8) ; en attendant : steamd-launch --handover"
+		fi
 	else
 		warn "notify-send absent : pas de notification sur le bureau" "sudo pacman -S libnotify"
 	fi

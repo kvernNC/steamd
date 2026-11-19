@@ -18,6 +18,7 @@ BIN_DIR="$HOME/.local/bin"
 UNIT_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
 CONF_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/steamd"
 STATE_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/steamd"
+APP_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/applications"
 STATE_FILE="$STATE_DIR/install.state"
 UDEV_RULE=/etc/udev/rules.d/60-steamd-uinput.rules
 MODULES_LOAD=/etc/modules-load.d/steamd-uinput.conf
@@ -75,7 +76,8 @@ systemctl --user reset-failed steamd.service steamd-session-hook.service 2>/dev/
 
 step "Fichiers utilisateur"
 for f in "$UNIT_DIR/steamd.service" "$UNIT_DIR/steamd-session-hook.service" \
-	"$BIN_DIR/steamd-launch" "$BIN_DIR/steamd-doctor" "$BIN_DIR/steamd-session-hook"; do
+	"$BIN_DIR/steamd-launch" "$BIN_DIR/steamd-doctor" "$BIN_DIR/steamd-session-hook" \
+	"$APP_DIR/steamd-handover.desktop"; do
 	if [[ -e $f ]]; then
 		rm -f "$f"
 		note "supprimé : $f"

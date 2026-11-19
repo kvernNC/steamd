@@ -5,6 +5,8 @@
 #   steamd-launch           boucle de supervision (ExecStart de steamd.service)
 #   steamd-launch --print   affiche la commande gamescope, sans l'exécuter
 #   steamd-launch --status  affiche l'état courant (running, standby, ...)
+#   steamd-launch --handover  depuis le bureau : ferme Steam headless (et la
+#                             partie Remote Play en cours) et ouvre Steam ici
 #
 # Le service ne s'arrête jamais de lui-même. Règle de base : une partie en
 # cours n'est jamais interrompue, quel que soit le Steam qui la fait tourner.
@@ -14,8 +16,9 @@
 #       yield    (défaut) : si une partie Remote Play est en cours, elle continue
 #                           (busy) et le bureau est prévenu ; à la fin de la
 #                           partie, Steam headless est fermé et le Steam du
-#                           bureau lancé. Sinon, Steam headless est fermé tout
-#                           de suite (standby).
+#                           bureau lancé. Une popup propose aussi de fermer
+#                           la partie tout de suite (--handover). Sinon, Steam
+#                           headless est fermé tout de suite (standby).
 #       takeover          : Steam headless gardé, même avec une session ouverte
 #   - un autre Steam tourne (bureau, lancé à la main...) -> jamais tué ; steamd
 #     attend qu'il se ferme (standby)
@@ -42,6 +45,7 @@ die() {
 CONF="${STEAMD_CONF:-${XDG_CONFIG_HOME:-$HOME/.config}/steamd/steamd.conf}"
 RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$UID}/steamd"
 STATE_FILE="$RUNTIME_DIR/state"
+HANDOVER_FILE="$RUNTIME_DIR/handover"
 
 # --- Valeurs par défaut (écrasées par la conf) --------------------------------
 WIDTH=1280
@@ -234,6 +238,49 @@ resume_desktop_steam() {
 		log "échec du lancement du Steam du bureau"
 }
 
+# Popup sur le bureau quand une session s'ouvre pendant une partie Remote Play.
+# Elle tourne en arrière-plan : le bouton « Fermer la partie » dépose une
+# demande de passage de main et réveille le superviseur.
+PROMPT_PID=0
+ask_handover() {
+	local name=$1
+	[[ $NOTIFY == true ]] || return 0
+	command -v notify-send >/dev/null || return 0
+	export DBUS_SESSION_BUS_ADDRESS=${DBUS_SESSION_BUS_ADDRESS:-unix:path=${XDG_RUNTIME_DIR:-/run/user/$UID}/bus}
+	local title="Steam est utilisé en Remote Play"
+	local body="Partie en cours : $name.
+Steam s'ouvrira ici automatiquement à la fin de la partie."
+	if notify-send --help 2>&1 | grep -q -- '--action'; then
+		(
+			choice=$(notify-send -a steamd -i steam -u critical --wait \
+				--action=handover="Fermer la partie et ouvrir Steam ici" \
+				--action=wait="Attendre la fin" \
+				"$title" "$body
+Fermer la partie maintenant fait perdre la progression non sauvegardée du joueur à distance." 2>/dev/null) || true
+			if [[ $choice == handover ]]; then
+				: >"$HANDOVER_FILE"
+				kill -USR1 $$ 2>/dev/null || true
+			fi
+		) &
+		PROMPT_PID=$!
+	else
+		notify-send -a steamd -i steam "$title" "$body
+Pour fermer la partie maintenant : steamd-launch --handover" >/dev/null 2>&1 || true
+	fi
+}
+# Termine un processus et tous ses descendants.
+kill_tree() {
+	local c
+	for c in $(pgrep -P "$1" 2>/dev/null); do kill_tree "$c"; done
+	kill "$1" 2>/dev/null || true
+}
+close_prompt() {
+	((PROMPT_PID > 0)) || return 0
+	kill_tree "$PROMPT_PID"
+	wait "$PROMPT_PID" 2>/dev/null || true
+	PROMPT_PID=0
+}
+
 # --- Blocage de la mise en veille pendant une partie ---------------------------
 INHIBIT_PID=0
 inhibit_on() {
@@ -362,7 +409,7 @@ supervise() {
 	local idle=0 last_tick=$SECONDS dt
 	trap on_term TERM INT
 	trap on_usr1 USR1
-	trap 'inhibit_off; set_state stopped "service arrêté"' EXIT
+	trap 'close_prompt; inhibit_off; set_state stopped "service arrêté"' EXIT
 	log "configuration : $CONF ; politique de session : $DESKTOP_SESSION_POLICY ; inactivité : $IDLE_ACTION"
 
 	while ((!STOPPING)); do
@@ -405,18 +452,29 @@ supervise() {
 
 		if [[ $DESKTOP_SESSION_POLICY == yield ]] && local_graphical_session; then
 			idle=0
-			if child_alive && [[ -n $game ]]; then
+			if child_alive && [[ -e $HANDOVER_FILE ]]; then
+				# Passage de main demandé depuis le bureau (popup ou --handover).
+				rm -f "$HANDOVER_FILE"
+				close_prompt
+				inhibit_off
+				stop_child "passage de main demandé depuis le bureau${game:+, partie « $name » fermée}"
+				set_state standby "session graphique locale ouverte : le Steam du bureau a la priorité"
+				desktop_waiting=0
+				resume_desktop_steam
+			elif child_alive && [[ -n $game ]]; then
 				# Session ouverte pendant une partie : on ne coupe rien.
 				if ((!desktop_waiting)); then
 					desktop_waiting=1
 					log "session de bureau ouverte pendant la partie « $name » : elle continue"
-					notify "Steam est utilisé en Remote Play" "Partie en cours : $name. Steam s'ouvrira ici à la fin de la partie."
+					ask_handover "$name"
 				fi
 				set_state busy "session de bureau ouverte, partie Remote Play en cours ($name) : elle n'est pas interrompue"
 			elif child_alive && ((desktop_waiting && SECONDS - last_game < HANDOVER_DELAY)); then
 				# Laisse le temps d'enchaîner (relance du jeu, launcher...).
 				set_state busy "partie terminée, passage au bureau dans $((HANDOVER_DELAY - (SECONDS - last_game)))s sauf nouvelle partie"
 			else
+				rm -f "$HANDOVER_FILE"
+				close_prompt
 				stop_child "session graphique locale ouverte"
 				set_state standby "session graphique locale ouverte : le Steam du bureau a la priorité"
 				if ((desktop_waiting)); then
@@ -426,6 +484,8 @@ supervise() {
 			fi
 		else
 			desktop_waiting=0
+			rm -f "$HANDOVER_FILE"
+			close_prompt
 			if child_alive; then
 				if [[ -n $game ]]; then
 					set_state running "partie Remote Play en cours : $name"
@@ -470,12 +530,20 @@ case ${1:-} in
 	echo
 	exit 0
 	;;
+--handover)
+	mkdir -p "$RUNTIME_DIR"
+	: >"$HANDOVER_FILE"
+	systemctl --user kill --kill-whom=main -s USR1 steamd.service 2>/dev/null || true
+	echo "Demande envoyée : Steam headless va être fermé et Steam ouvert sur le bureau."
+	echo "(Sans effet si aucune session de bureau n'est ouverte ou si steamd est déjà en veille.)"
+	exit 0
+	;;
 --status)
 	if [[ -r $STATE_FILE ]]; then cat "$STATE_FILE"; else echo "inconnu"; fi
 	exit 0
 	;;
 "") ;;
-*) die $EXIT_CONFIG "option inconnue : $1 (attendu : --print, --status)" ;;
+*) die $EXIT_CONFIG "option inconnue : $1 (attendu : --print, --status, --handover)" ;;
 esac
 
 load_conf

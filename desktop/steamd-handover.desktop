@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Récupérer Steam (steamd)
+Comment=Ferme le Steam headless, et la partie Remote Play en cours, puis ouvre Steam sur le bureau
+Exec=@BIN_DIR@/steamd-launch --handover
+Icon=steam
+Terminal=false
+Categories=Game;

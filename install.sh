@@ -21,6 +21,7 @@ BIN_DIR="$HOME/.local/bin"
 UNIT_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
 CONF_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/steamd"
 STATE_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/steamd"
+APP_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/applications"
 STATE_FILE="$STATE_DIR/install.state"
 UDEV_RULE=/etc/udev/rules.d/60-steamd-uinput.rules
 MODULES_LOAD=/etc/modules-load.d/steamd-uinput.conf
@@ -110,6 +111,12 @@ for u in steamd.service steamd-session-hook.service; do
 	install -m 0644 "$REPO_DIR/systemd/$u" "$UNIT_DIR/$u"
 	note "$UNIT_DIR/$u"
 done
+
+step "Entrée de menu « Récupérer Steam »"
+mkdir -p "$APP_DIR"
+sed "s|@BIN_DIR@|$BIN_DIR|g" "$REPO_DIR/desktop/steamd-handover.desktop" >"$APP_DIR/steamd-handover.desktop"
+chmod 0644 "$APP_DIR/steamd-handover.desktop"
+note "$APP_DIR/steamd-handover.desktop"
 
 step "Configuration"
 mkdir -p "$CONF_DIR"

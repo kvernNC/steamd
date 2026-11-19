@@ -49,7 +49,9 @@ HANDOVER_DELAY=15
 RESUME_DESKTOP_STEAM=true
 # Options du Steam lancé sur le bureau (ex. "-silent" pour le garder réduit).
 DESKTOP_STEAM_ARGS=""
-# Notifications sur le bureau (notify-send, paquet libnotify).
+# Notifications sur le bureau (notify-send, paquet libnotify). Si une session
+# s'ouvre pendant une partie Remote Play, une popup propose « Fermer la partie
+# et ouvrir Steam ici » ou « Attendre la fin ».
 NOTIFY=true
 
 # --- Énergie --------------------------------------------------------------------
