@@ -1,0 +1,345 @@
+#!/usr/bin/env bash
+# steamd-doctor : diagnostic de l'installation steamd.
+# Chaque point est marqué OK, KO ou ATTENTION, avec une piste de correction.
+# Code de sortie : nombre de points KO (plafonné à 100).
+#
+#   steamd-doctor            rapport complet et 30 dernières lignes de log
+#   steamd-doctor -n 100     afficher 100 lignes de log
+#   steamd-doctor --no-logs  sans les logs
+set -uo pipefail
+
+USER=${USER:-$(id -un)}
+
+LOG_LINES=30
+while (($#)); do
+	case $1 in
+	-n)
+		LOG_LINES=${2:?-n attend un nombre}
+		shift
+		;;
+	--no-logs) LOG_LINES=0 ;;
+	-h | --help)
+		sed -n '2,8p' "$0"
+		exit 0
+		;;
+	*)
+		echo "option inconnue : $1" >&2
+		exit 2
+		;;
+	esac
+	shift
+done
+
+if [[ -t 1 ]]; then
+	C_OK=$'\e[32m' C_KO=$'\e[31m' C_WARN=$'\e[33m' C_DIM=$'\e[2m' C_B=$'\e[1m' C_0=$'\e[0m'
+else
+	C_OK="" C_KO="" C_WARN="" C_DIM="" C_B="" C_0=""
+fi
+
+N_KO=0
+N_WARN=0
+section() { printf '\n%s== %s ==%s\n' "$C_B" "$*" "$C_0"; }
+ok() { printf '  [%sOK%s]        %s\n' "$C_OK" "$C_0" "$1"; }
+ko() {
+	printf '  [%sKO%s]        %s\n' "$C_KO" "$C_0" "$1"
+	[[ -n ${2:-} ]] && printf '              %s-> %s%s\n' "$C_DIM" "$2" "$C_0"
+	N_KO=$((N_KO + 1))
+}
+warn() {
+	printf '  [%sATTENTION%s] %s\n' "$C_WARN" "$C_0" "$1"
+	[[ -n ${2:-} ]] && printf '              %s-> %s%s\n' "$C_DIM" "$2" "$C_0"
+	N_WARN=$((N_WARN + 1))
+}
+info() { printf '  [info]      %s\n' "$1"; }
+
+have() { command -v "$1" >/dev/null 2>&1; }
+
+CONF="${STEAMD_CONF:-${XDG_CONFIG_HOME:-$HOME/.config}/steamd/steamd.conf}"
+UNIT_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
+BIN_DIR="$HOME/.local/bin"
+STATE_FILE="${XDG_DATA_HOME:-$HOME/.local/share}/steamd/install.state"
+UINPUT_GROUP=input
+# shellcheck disable=SC1090
+[[ -r $STATE_FILE ]] && source "$STATE_FILE"
+
+printf '%ssteamd-doctor%s : utilisateur %s (uid %s), %s\n' "$C_B" "$C_0" "$USER" "$UID" "$(date '+%F %T')"
+
+if ((UID == 0)); then
+	ko "lancé en root" "lancer steamd-doctor avec l'utilisateur qui fait tourner Steam"
+fi
+
+# ---------------------------------------------------------------------------
+section "Binaires"
+if have gamescope; then
+	gs_ver=$(gamescope --version 2>&1 | grep -m1 -oE '[0-9]+\.[0-9]+(\.[0-9]+)?' || true)
+	ok "gamescope présent ($(command -v gamescope)${gs_ver:+, version $gs_ver})"
+	if gamescope --help 2>&1 | grep -q -- headless; then
+		ok "gamescope prend en charge --backend headless"
+	else
+		ko "gamescope ne mentionne pas le backend headless" "mettre à jour gamescope (sudo pacman -Syu gamescope)"
+	fi
+else
+	ko "gamescope introuvable" "sudo pacman -S gamescope"
+fi
+if have steam; then
+	ok "steam présent ($(command -v steam))"
+else
+	ko "steam introuvable" "sudo pacman -S steam"
+fi
+
+# ---------------------------------------------------------------------------
+section "Installation steamd"
+for f in steamd-launch steamd-session-hook steamd-doctor; do
+	if [[ -x $BIN_DIR/$f ]]; then ok "$BIN_DIR/$f"; else ko "$BIN_DIR/$f absent" "relancer ./install.sh"; fi
+done
+for u in steamd.service steamd-session-hook.service; do
+	if [[ -f $UNIT_DIR/$u ]]; then ok "$UNIT_DIR/$u"; else ko "$UNIT_DIR/$u absent" "relancer ./install.sh"; fi
+done
+if [[ -r $CONF ]]; then
+	ok "configuration : $CONF"
+	if [[ -x $BIN_DIR/steamd-launch ]]; then
+		if cmd=$("$BIN_DIR/steamd-launch" --print 2>&1); then
+			info "commande : $cmd"
+		else
+			ko "configuration invalide : $cmd" "corriger $CONF"
+		fi
+	fi
+else
+	warn "pas de configuration ($CONF), valeurs par défaut utilisées" "cp config/steamd.conf.example $CONF"
+fi
+
+# ---------------------------------------------------------------------------
+section "Démarrage sans session (linger)"
+linger=$(loginctl show-user "$USER" -p Linger --value 2>/dev/null || true)
+if [[ $linger == yes || -e /var/lib/systemd/linger/$USER ]]; then
+	ok "linger activé"
+else
+	ko "linger désactivé : le service ne démarrera pas au boot sans connexion" "loginctl enable-linger $USER"
+fi
+if systemctl --user show-environment >/dev/null 2>&1; then
+	ok "gestionnaire systemd utilisateur joignable"
+else
+	ko "gestionnaire systemd utilisateur injoignable" "en SSH : vérifier que XDG_RUNTIME_DIR=/run/user/$UID est défini"
+fi
+
+# ---------------------------------------------------------------------------
+section "PipeWire (vidéo et audio sans session)"
+for u in pipewire.socket pipewire-pulse.socket wireplumber.service; do
+	en=$(systemctl --user is-enabled "$u" 2>/dev/null || true)
+	ac=$(systemctl --user is-active "$u" 2>/dev/null || true)
+	if [[ $ac == active ]]; then
+		ok "$u actif ($en)"
+	elif [[ $en == enabled || $en == static || $en == indirect || $en == alias ]]; then
+		warn "$u activé mais pas actif ($ac)" "systemctl --user start $u ; journalctl --user -u $u"
+	else
+		ko "$u non activé ($en, $ac)" "systemctl --user enable --now $u"
+	fi
+done
+ac=$(systemctl --user is-active pipewire.service 2>/dev/null || true)
+if [[ $ac == active ]]; then
+	ok "pipewire.service tourne"
+else
+	info "pipewire.service : $ac (normal s'il n'a pas encore été sollicité, le socket le démarre)"
+fi
+
+# ---------------------------------------------------------------------------
+section "GPU"
+shopt -s nullglob
+render_nodes=(/dev/dri/renderD*)
+shopt -u nullglob
+if ((${#render_nodes[@]} == 0)); then
+	ko "aucun /dev/dri/renderD*" "pilote amdgpu non chargé ? (lsmod | grep amdgpu)"
+else
+	for n in "${render_nodes[@]}"; do
+		perms=$(stat -c '%A %U:%G' "$n")
+		if [[ -r $n && -w $n ]]; then
+			ok "$n accessible en lecture/écriture ($perms)"
+		else
+			ko "$n inaccessible ($perms)" "sudo gpasswd -a $USER render, puis redémarrer"
+		fi
+	done
+fi
+if have vainfo; then
+	va=$(vainfo 2>/dev/null || true)
+	enc=$(grep -E 'VAEntrypointEncSlice' <<<"$va" | grep -oE 'VAProfile(H264|HEVC|AV1)[A-Za-z0-9]*' | sort -u | tr '\n' ' ')
+	if [[ -n $enc ]]; then
+		ok "encodage VA-API : $enc"
+	else
+		warn "aucun profil d'encodage VA-API détecté" "vérifier mesa / libva-mesa-driver"
+	fi
+else
+	info "vainfo absent : encodage VA-API non vérifié (sudo pacman -S libva-utils)"
+fi
+
+# ---------------------------------------------------------------------------
+section "Entrées (/dev/uinput)"
+if [[ -d /sys/module/uinput ]]; then
+	ok "module uinput chargé"
+else
+	ko "module uinput non chargé" "sudo modprobe uinput (install.sh le rend persistant via /etc/modules-load.d)"
+fi
+if [[ -f /etc/udev/rules.d/60-steamd-uinput.rules ]]; then
+	rule_group=$(grep -oE 'GROUP="[^"]+"' /etc/udev/rules.d/60-steamd-uinput.rules | head -1 | cut -d'"' -f2)
+	UINPUT_GROUP=${rule_group:-$UINPUT_GROUP}
+	ok "règle udev installée (groupe $UINPUT_GROUP)"
+else
+	ko "règle udev /etc/udev/rules.d/60-steamd-uinput.rules absente" "relancer ./install.sh"
+fi
+if [[ -e /dev/uinput ]]; then
+	perms=$(stat -c '%A %U:%G' /dev/uinput)
+	grp=$(stat -c '%G' /dev/uinput)
+	if [[ $grp == "$UINPUT_GROUP" ]]; then
+		ok "/dev/uinput appartient au groupe $grp ($perms)"
+	else
+		ko "/dev/uinput : $perms (groupe attendu : $UINPUT_GROUP)" "sudo udevadm control --reload && sudo udevadm trigger --name-match=uinput"
+	fi
+	if [[ -r /dev/uinput && -w /dev/uinput ]]; then
+		ok "/dev/uinput accessible par ce shell"
+	else
+		warn "/dev/uinput inaccessible par ce shell" "normal juste après install.sh : redémarrer pour appliquer le groupe"
+	fi
+else
+	ko "/dev/uinput absent" "sudo modprobe uinput"
+fi
+if id -nG "$USER" 2>/dev/null | tr ' ' '\n' | grep -qx "$UINPUT_GROUP"; then
+	ok "$USER est membre du groupe $UINPUT_GROUP"
+else
+	ko "$USER n'est pas membre du groupe $UINPUT_GROUP" "sudo gpasswd -a $USER $UINPUT_GROUP, puis redémarrer"
+fi
+# Le gestionnaire systemd utilisateur (lancé au boot via linger) doit avoir le
+# groupe : sinon il faut redémarrer.
+mgr_pid=$(pgrep -u "$UID" -xo systemd || true)
+gid=$(getent group "$UINPUT_GROUP" | cut -d: -f3)
+if [[ -n $mgr_pid && -n $gid && -r /proc/$mgr_pid/status ]]; then
+	if grep -E '^Groups:' "/proc/$mgr_pid/status" | tr -s ' \t' '\n' | grep -qx "$gid"; then
+		ok "le gestionnaire systemd utilisateur (pid $mgr_pid) a le groupe $UINPUT_GROUP"
+	else
+		ko "le gestionnaire systemd utilisateur (pid $mgr_pid) n'a pas le groupe $UINPUT_GROUP" "redémarrer le PC (ou : sudo systemctl restart user@$UID.service, hors session graphique)"
+	fi
+fi
+
+# ---------------------------------------------------------------------------
+section "Steam"
+steam_root=""
+for d in "$HOME/.steam/steam" "$HOME/.local/share/Steam"; do
+	[[ -d $d ]] && {
+		steam_root=$d
+		break
+	}
+done
+if [[ -n $steam_root ]]; then
+	ok "installation Steam : $steam_root"
+	if [[ -s $steam_root/config/loginusers.vdf ]]; then
+		ok "un compte Steam s'est déjà connecté (loginusers.vdf)"
+	else
+		ko "aucun compte Steam enregistré" "se connecter une fois à Steam depuis le bureau (Steam Guard)"
+	fi
+else
+	ko "aucune installation Steam trouvée dans ~/.steam" "lancer Steam une première fois depuis le bureau"
+fi
+info "Remote Play : vérifier qu'il est activé dans Steam > Paramètres > Remote Play (non vérifiable ici)"
+
+# ---------------------------------------------------------------------------
+section "Instance unique et session"
+mapfile -t steam_pids < <(pgrep -u "$UID" -x steam || true)
+if ((${#steam_pids[@]} == 0)); then
+	info "aucun Steam en cours"
+else
+	for p in "${steam_pids[@]}"; do
+		cg=$(cat "/proc/$p/cgroup" 2>/dev/null || true)
+		if [[ $cg == *steamd.service* ]]; then
+			ok "Steam (pid $p) tourne dans steamd.service"
+		else
+			if [[ $(systemctl --user is-active steamd.service 2>/dev/null) == active ]]; then
+				ko "Steam (pid $p) tourne HORS de steamd alors que steamd est actif" "fermer l'un des deux"
+			else
+				info "Steam (pid $p) tourne hors de steamd (Steam du bureau)"
+			fi
+		fi
+	done
+fi
+if systemctl --user is-active --quiet graphical-session.target 2>/dev/null; then
+	info "une session graphique locale est ouverte"
+else
+	info "pas de session graphique locale"
+fi
+en=$(systemctl --user is-enabled steamd-session-hook.service 2>/dev/null || true)
+if [[ $en == enabled ]]; then
+	ok "steamd-session-hook.service activé"
+else
+	warn "steamd-session-hook.service : $en (steamd ne s'arrêtera pas à la connexion au bureau)" "systemctl --user enable steamd-session-hook.service"
+fi
+
+# ---------------------------------------------------------------------------
+section "Réseau"
+if have nmcli && nmcli -t general status >/dev/null 2>&1; then
+	found_wifi=0
+	while IFS=: read -r name type dev; do
+		[[ $type == 802-11-wireless ]] || continue
+		found_wifi=1
+		perms=$(nmcli -g connection.permissions connection show "$name" 2>/dev/null || true)
+		flags=$(nmcli -g 802-11-wireless-security.psk-flags connection show "$name" 2>/dev/null || true)
+		auto=$(nmcli -g connection.autoconnect connection show "$name" 2>/dev/null || true)
+		if [[ -n $perms ]]; then
+			ko "Wi-Fi « $name » réservé à un utilisateur : il ne se connectera pas au boot sans session" "nmcli connection modify \"$name\" connection.permissions ''"
+		elif [[ -n $flags && $flags != 0 && $flags != "0 (none)" ]]; then
+			ko "Wi-Fi « $name » : mot de passe stocké dans le trousseau KDE (psk-flags=$flags), indisponible sans session" "nmcli connection modify \"$name\" 802-11-wireless-security.psk-flags 0 802-11-wireless-security.psk '<mot de passe>'"
+		elif [[ $auto != yes ]]; then
+			warn "Wi-Fi « $name » : autoconnect=$auto" "nmcli connection modify \"$name\" connection.autoconnect yes"
+		else
+			ok "Wi-Fi « $name » ($dev) disponible pour tout le système, sans session"
+		fi
+	done < <(nmcli -t -f NAME,TYPE,DEVICE connection show --active 2>/dev/null)
+	((found_wifi)) || info "aucune connexion Wi-Fi active"
+else
+	info "NetworkManager absent ou inaccessible : connexion réseau au boot non vérifiée"
+fi
+fw=""
+systemctl is-active --quiet ufw 2>/dev/null && fw=ufw
+systemctl is-active --quiet firewalld 2>/dev/null && fw=firewalld
+case $fw in
+ufw) warn "pare-feu ufw actif : vérifier les ports Remote Play" "sudo ufw allow 27031:27036/udp && sudo ufw allow 27036:27037/tcp" ;;
+firewalld) warn "pare-feu firewalld actif : vérifier les ports Remote Play" "sudo firewall-cmd --permanent --add-port=27031-27036/udp --add-port=27036-27037/tcp && sudo firewall-cmd --reload" ;;
+*) info "aucun pare-feu ufw/firewalld actif détecté" ;;
+esac
+
+# ---------------------------------------------------------------------------
+section "Service steamd"
+en=$(systemctl --user is-enabled steamd.service 2>/dev/null || true)
+ac=$(systemctl --user is-active steamd.service 2>/dev/null || true)
+if [[ $en == enabled ]]; then
+	ok "steamd.service activé au démarrage"
+else
+	ko "steamd.service : $en" "systemctl --user enable steamd.service"
+fi
+case $ac in
+active)
+	since=$(systemctl --user show steamd.service -p ActiveEnterTimestamp --value 2>/dev/null)
+	ok "steamd.service actif depuis $since"
+	;;
+failed)
+	res=$(systemctl --user show steamd.service -p Result --value 2>/dev/null)
+	code=$(systemctl --user show steamd.service -p ExecMainStatus --value 2>/dev/null)
+	hint="journalctl --user -u steamd -e"
+	[[ $code == 2 ]] && hint="configuration invalide : voir les logs ci-dessous"
+	[[ $code == 3 ]] && hint="conflit avec un autre Steam ou une session de bureau : voir les logs"
+	ko "steamd.service en échec (résultat $res, code $code)" "$hint ; puis systemctl --user reset-failed steamd && systemctl --user start steamd"
+	;;
+*) info "steamd.service : $ac" ;;
+esac
+nr=$(systemctl --user show steamd.service -p NRestarts --value 2>/dev/null || true)
+[[ -n $nr && $nr != 0 ]] && warn "steamd.service a redémarré $nr fois" "voir les logs ci-dessous"
+
+if ((LOG_LINES > 0)); then
+	section "Derniers logs (journalctl --user -u steamd -n $LOG_LINES)"
+	journalctl --user -u steamd.service -u steamd-session-hook.service -n "$LOG_LINES" --no-pager 2>&1 | sed 's/^/  /'
+fi
+
+# ---------------------------------------------------------------------------
+section "Résumé"
+if ((N_KO == 0)); then
+	printf '  %sTout est OK%s (%d avertissement(s)).\n' "$C_OK" "$C_0" "$N_WARN"
+else
+	printf '  %s%d point(s) KO%s, %d avertissement(s).\n' "$C_KO" "$N_KO" "$C_0" "$N_WARN"
+fi
+exit $((N_KO > 100 ? 100 : N_KO))

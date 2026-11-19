@@ -52,7 +52,8 @@ steamd/
 ├── config/
 │   └── steamd.conf.example     # résolution, fréquence, options
 ├── systemd/
-│   └── steamd.service          # unité utilisateur
+│   ├── steamd.service              # unité utilisateur
+│   └── steamd-session-hook.service # suit graphical-session.target
 ├── udev/
 │   └── 60-steamd-uinput.rules
 ├── bin/
@@ -78,18 +79,114 @@ gamescope -W 1280 -H 800 -w 1280 -h 800 -r 60 \
 - `-W`/`-H` : résolution de sortie de gamescope. `-w`/`-h` : résolution vue par l'application. On utilise 1280×800, la résolution native du Deck.
 - Plan B en cas d'écran noir : remplacer `-pipewire-dmabuf` par `-pipewire`, puis retirer l'option. Le wrapper doit permettre de changer ce choix dans la conf.
 
+## Installation
+
+Sur le PC hôte, avec l'utilisateur qui joue (pas en root, `sudo` est demandé quand il faut) :
+
+```bash
+git clone https://github.com/kvernNC/steamd.git
+```
+
+```bash
+cd steamd && ./install.sh
+```
+
+Ce que fait `install.sh` (relançable sans risque) :
+
+| Étape | Détail |
+|---|---|
+| Scripts | `steamd-launch`, `steamd-doctor` et `steamd-session-hook` dans `~/.local/bin` |
+| Unités | `steamd.service` et `steamd-session-hook.service` dans `~/.config/systemd/user`, activées |
+| Configuration | `~/.config/steamd/steamd.conf` copié depuis l'exemple, **seulement s'il n'existe pas** |
+| udev | `/etc/udev/rules.d/60-steamd-uinput.rules` (groupe `input` par défaut, `--group NOM` pour changer) |
+| Module | `/etc/modules-load.d/steamd-uinput.conf` pour charger `uinput` au boot |
+| Groupe | ajoute l'utilisateur au groupe, s'il n'y est pas déjà |
+| Linger | `loginctl enable-linger $USER`, s'il n'est pas déjà activé |
+| PipeWire | `pipewire.socket`, `pipewire-pulse.socket` et `wireplumber.service` activés en utilisateur |
+
+Ce que l'installation a elle-même changé (groupe, linger) est noté dans `~/.local/share/steamd/install.state`. C'est ce qui permet à `uninstall.sh` de ne retirer que ce qui a été ajouté.
+
+Options : `--no-enable` (installer sans activer au boot) et `--start` (démarrer tout de suite).
+
+Ensuite : faire les [prérequis manuels](#prérequis-manuels-une-seule-fois), puis **redémarrer**. Le gestionnaire systemd utilisateur ne prend le nouveau groupe qu'à son redémarrage.
+
 ## Configuration (`~/.config/steamd/steamd.conf`)
 
 ```ini
 WIDTH=1280
 HEIGHT=800
 REFRESH=60
+APP_WIDTH=""                    # vide = WIDTH
+APP_HEIGHT=""                   # vide = HEIGHT
 STEAM_CAPTURE=pipewire-dmabuf   # pipewire-dmabuf | pipewire | none
+STEAM_UI_ARG="-tenfoot"         # ou -gamepadui
 GAMESCOPE_EXTRA_ARGS=""
 STEAM_EXTRA_ARGS=""
 STOP_ON_LOCAL_LOGIN=true
 RESTART_ON_LOCAL_LOGOUT=true
+STEAM_WAIT_TIMEOUT=60           # attente max d'un autre Steam ou d'une session au démarrage
+STOP_TIMEOUT=30                 # temps laissé à Steam pour se fermer proprement
 ```
+
+Le fichier est lu par bash. Les options `*_EXTRA_ARGS` sont découpées sur les espaces, sans gestion des guillemets imbriqués. La liste complète est commentée dans [`config/steamd.conf.example`](config/steamd.conf.example).
+
+Pour voir la commande qui sera lancée, sans rien démarrer :
+
+```bash
+steamd-launch --print
+```
+
+Après une modification :
+
+```bash
+systemctl --user restart steamd
+```
+
+## Fonctionnement
+
+- **`steamd.service`** (`Restart=on-failure`, 10 s) appelle `steamd-launch`. Le wrapper valide la conf, attend jusqu'à `STEAM_WAIT_TIMEOUT` qu'aucun autre Steam ne tourne et qu'aucune session graphique locale ne soit ouverte, retire `DISPLAY` et `WAYLAND_DISPLAY` hérités d'une ancienne session Plasma, puis lance gamescope avec `exec`.
+- **Arrêt** : `ExecStop` envoie `steam -shutdown` et laisse `STOP_TIMEOUT` secondes à Steam pour se fermer proprement. Au-delà, systemd termine les processus restants.
+- **Codes de sortie** : `2` pour une configuration invalide et `3` pour un conflit (autre Steam ou session de bureau). Dans les deux cas, systemd ne relance pas le service (`RestartPreventExitStatus`).
+- **`steamd-session-hook.service`** est rattaché à `graphical-session.target`, que Plasma démarre à la connexion. Il s'exécute *avant* le bureau (`Type=oneshot`, donc bloquant) et arrête `steamd` : le Steam du bureau démarre ensuite normalement. À la déconnexion, son `ExecStop` relance `steamd` si `RESTART_ON_LOCAL_LOGOUT=true` et que le service est activé. Une connexion SSH n'ouvre pas de session graphique et n'a aucun effet.
+
+### Commandes utiles
+
+```bash
+systemctl --user status steamd
+```
+
+```bash
+journalctl --user -u steamd -f
+```
+
+```bash
+systemctl --user stop steamd
+```
+
+En SSH, si `systemctl --user` répond « Failed to connect to bus » : `export XDG_RUNTIME_DIR=/run/user/$(id -u)`.
+
+## Diagnostic
+
+```bash
+steamd-doctor
+```
+
+Le diagnostic vérifie : les binaires et le backend headless de gamescope, les fichiers installés et la validité de la conf, le linger, PipeWire et WirePlumber, `/dev/dri/renderD*` et l'encodage VA-API (si `vainfo` est présent), `/dev/uinput` (module, règle udev, groupe du nœud, appartenance de l'utilisateur et du gestionnaire systemd au groupe), le compte Steam, l'instance unique, le hook de session, la connexion Wi-Fi au boot, le pare-feu et l'état du service. Il affiche ensuite les derniers logs.
+
+Chaque point est marqué `OK`, `KO` ou `ATTENTION`, avec une piste de correction. Le code de sortie est le nombre de `KO`. Options : `-n 100` pour afficher plus de logs, `--no-logs` pour ne pas les afficher.
+
+## Désinstallation
+
+```bash
+./uninstall.sh
+```
+
+Le script arrête et désactive les services, puis supprime les scripts, les unités, la règle udev et le fichier `modules-load`. Par défaut, il conserve :
+
+- la configuration (`--purge` pour la supprimer) ;
+- le groupe (`--remove-group`) et le linger (`--disable-linger`). Avec ces options, ils ne sont retirés que si `install.sh` les avait lui-même ajoutés. `--force` les retire dans tous les cas.
+
+Steam, `~/.steam` et les bibliothèques de jeux ne sont jamais touchés.
 
 ## Exigences techniques
 
@@ -108,11 +205,22 @@ RESTART_ON_LOCAL_LOGOUT=true
 - L'ajouter en jeu non-Steam depuis le mode bureau, pour pouvoir le lancer depuis le mode jeu.
 - Le Pi se charge de la traduction vers la carte Ethernet du PC.
 
+Mise en place, en mode bureau sur le Deck :
+
+1. Copier `deck/wake-host.sh` (par exemple dans `~/bin/`), puis `chmod +x`.
+2. Renseigner `HOST_MAC` (la MAC qu'attend le relais) et `BROADCAST` en tête du script, ou dans `~/.config/steamd/wake-host.conf`.
+3. Facultatif : définir `HOST_ADDR` pour que le script attende que le PC réponde au ping (jusqu'à `WAIT_TIMEOUT`).
+4. Steam > *Ajouter un jeu non-Steam* > choisir le script, puis le renommer « Réveil PC ».
+
+Le mode jeu n'affiche rien : chaque envoi est journalisé dans `~/.local/state/steamd/wake-host.log`.
+
 ## Prérequis manuels (une seule fois)
 
 1. Dans une session de bureau normale : connexion à Steam (Steam Guard) et activation de Remote Play dans les paramètres.
 2. Connecter le Deck une première fois et saisir le PIN d'appairage sur l'hôte.
 3. Fermer Steam complètement avant de lancer `steamd`.
+4. **Wi-Fi au boot** : la connexion doit être disponible pour tous les utilisateurs, avec un mot de passe stocké par le système et non dans le trousseau KDE. Sinon, le PC n'a pas de réseau tant que personne ne s'est connecté. `steamd-doctor` le vérifie et donne la commande `nmcli` correspondante.
+5. **Pare-feu** : si ufw ou firewalld est actif, ouvrir UDP 27031-27036 et TCP 27036-27037.
 
 ## Plan de test
 
@@ -131,8 +239,17 @@ RESTART_ON_LOCAL_LOGOUT=true
 
 - **Écran noir avec le son qui passe** : problème déjà signalé avec le backend headless de gamescope. Essayer les autres modes de capture Steam, vérifier la version de gamescope, et lancer gamescope avec ses logs détaillés.
 - **Manettes inertes** : droits sur `/dev/uinput`, à vérifier avec `steamd-doctor`.
+- **Pas de réseau après un boot à froid** : connexion Wi-Fi réservée à l'utilisateur ou mot de passe dans KWallet. Voir `steamd-doctor`, section Réseau.
 - **Pas d'audio** : PipeWire utilisateur pas démarré sans session, à vérifier avec `systemctl --user status pipewire`.
 - **Steam démarre mais l'hôte n'apparaît pas sur le Deck** : pare-feu (UDP 27031-27036, TCP 27036-27037) ou Remote Play désactivé.
+
+## État d'avancement
+
+Tout le contenu du périmètre v1 est écrit. Les scripts passent `shellcheck`, et la génération de commande ainsi que l'envoi du magic packet ont été testés hors machine cible. **Le plan de test ci-dessus reste à dérouler sur le PC hôte et le Deck.** Points à confirmer en priorité :
+
+- test 2 (uinput et PipeWire sans session) ;
+- le bon déclenchement de `steamd-session-hook` par Plasma 6 (`graphical-session-pre.target` puis `graphical-session.target`) ;
+- l'arrêt propre via `steam -shutdown` sans affichage.
 
 ## Critères de fin pour la v1
 

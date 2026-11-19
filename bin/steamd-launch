@@ -1,0 +1,177 @@
+#!/usr/bin/env bash
+# steamd-launch : lit la configuration et lance Steam (Big Picture) dans un
+# gamescope headless, pour Steam Remote Play.
+#
+#   steamd-launch           lance gamescope et Steam (ExecStart de steamd.service)
+#   steamd-launch --stop    demande à Steam de se fermer proprement (ExecStop)
+#   steamd-launch --print   affiche la commande qui serait lancée, sans l'exécuter
+#
+# Codes de sortie :
+#   2  configuration invalide            (systemd ne relance pas)
+#   3  conflit : autre Steam ou session  (systemd ne relance pas)
+set -euo pipefail
+
+USER=${USER:-$(id -un)}
+
+readonly EXIT_CONFIG=2
+readonly EXIT_CONFLICT=3
+
+log() { printf 'steamd: %s\n' "$*" >&2; }
+die() {
+	local code=$1
+	shift
+	log "ERREUR: $*"
+	exit "$code"
+}
+
+CONF="${STEAMD_CONF:-${XDG_CONFIG_HOME:-$HOME/.config}/steamd/steamd.conf}"
+
+# --- Valeurs par défaut (écrasées par la conf) --------------------------------
+WIDTH=1280
+HEIGHT=800
+REFRESH=60
+APP_WIDTH=""
+APP_HEIGHT=""
+STEAM_CAPTURE=pipewire-dmabuf
+STEAM_UI_ARG="-tenfoot"
+GAMESCOPE_EXTRA_ARGS=""
+STEAM_EXTRA_ARGS=""
+STOP_ON_LOCAL_LOGIN=true
+# shellcheck disable=SC2034 # lu par steamd-session-hook, pas ici
+RESTART_ON_LOCAL_LOGOUT=true
+STEAM_WAIT_TIMEOUT=60
+STOP_TIMEOUT=30
+GAMESCOPE_BIN=gamescope
+STEAM_BIN=steam
+
+if [[ -r $CONF ]]; then
+	# shellcheck source=/dev/null
+	source "$CONF"
+else
+	log "pas de configuration ($CONF), valeurs par défaut utilisées"
+fi
+
+is_uint() { [[ $1 =~ ^[0-9]+$ ]]; }
+
+validate_conf() {
+	local v
+	for v in WIDTH HEIGHT REFRESH STEAM_WAIT_TIMEOUT STOP_TIMEOUT; do
+		is_uint "${!v}" || die $EXIT_CONFIG "$v doit être un entier (valeur : '${!v}')"
+	done
+	for v in APP_WIDTH APP_HEIGHT; do
+		[[ -z ${!v} ]] || is_uint "${!v}" || die $EXIT_CONFIG "$v doit être vide ou entier (valeur : '${!v}')"
+	done
+	case $STEAM_CAPTURE in
+	pipewire-dmabuf | pipewire | none) ;;
+	*) die $EXIT_CONFIG "STEAM_CAPTURE doit valoir pipewire-dmabuf, pipewire ou none (valeur : '$STEAM_CAPTURE')" ;;
+	esac
+	command -v "$GAMESCOPE_BIN" >/dev/null || die $EXIT_CONFIG "gamescope introuvable ($GAMESCOPE_BIN)"
+	command -v "$STEAM_BIN" >/dev/null || die $EXIT_CONFIG "steam introuvable ($STEAM_BIN)"
+}
+
+# Steam client déjà lancé pour cet utilisateur ?
+steam_running() { pgrep -u "$UID" -x steam >/dev/null; }
+
+# Session graphique locale ouverte pour cet utilisateur ?
+# Regarde à la fois graphical-session.target et logind (sessions non systemd).
+local_graphical_session() {
+	if systemctl --user is-active --quiet graphical-session.target 2>/dev/null; then
+		return 0
+	fi
+	local s type remote state
+	for s in $(loginctl show-user "$UID" -p Sessions --value 2>/dev/null); do
+		type=$(loginctl show-session "$s" -p Type --value 2>/dev/null) || continue
+		remote=$(loginctl show-session "$s" -p Remote --value 2>/dev/null) || continue
+		state=$(loginctl show-session "$s" -p State --value 2>/dev/null) || continue
+		if [[ ($type == wayland || $type == x11) && $remote == no && $state != closing ]]; then
+			return 0
+		fi
+	done
+	return 1
+}
+
+# Attend qu'il n'y ait ni autre Steam ni session graphique (si demandé).
+wait_for_free_slot() {
+	local waited=0 reason
+	while :; do
+		reason=""
+		if steam_running; then
+			reason="un autre Steam tourne déjà pour $USER"
+		elif [[ $STOP_ON_LOCAL_LOGIN == true ]] && local_graphical_session; then
+			reason="une session graphique locale est ouverte (STOP_ON_LOCAL_LOGIN=true)"
+		fi
+		[[ -z $reason ]] && return 0
+		if ((waited >= STEAM_WAIT_TIMEOUT)); then
+			die $EXIT_CONFLICT "$reason ; abandon après ${STEAM_WAIT_TIMEOUT}s"
+		fi
+		((waited == 0)) && log "en attente : $reason (max ${STEAM_WAIT_TIMEOUT}s)"
+		sleep 2
+		waited=$((waited + 2))
+	done
+}
+
+build_command() {
+	local -a gs_extra st_extra steam_ui
+	read -ra gs_extra <<<"$GAMESCOPE_EXTRA_ARGS"
+	read -ra st_extra <<<"$STEAM_EXTRA_ARGS"
+	read -ra steam_ui <<<"$STEAM_UI_ARG"
+
+	CMD=("$GAMESCOPE_BIN"
+		-W "$WIDTH" -H "$HEIGHT"
+		-w "${APP_WIDTH:-$WIDTH}" -h "${APP_HEIGHT:-$HEIGHT}"
+		-r "$REFRESH"
+		--backend headless --steam
+		"${gs_extra[@]}"
+		--
+		"$STEAM_BIN" "${steam_ui[@]}")
+	case $STEAM_CAPTURE in
+	pipewire-dmabuf) CMD+=(-pipewire-dmabuf) ;;
+	pipewire) CMD+=(-pipewire) ;;
+	none) ;;
+	esac
+	CMD+=("${st_extra[@]}")
+}
+
+do_stop() {
+	steam_running || exit 0
+	log "demande d'arrêt propre à Steam (max ${STOP_TIMEOUT}s)"
+	"$STEAM_BIN" -shutdown >/dev/null 2>&1 &
+	local i
+	for ((i = 0; i < STOP_TIMEOUT; i++)); do
+		steam_running || {
+			log "Steam fermé"
+			exit 0
+		}
+		sleep 1
+	done
+	log "Steam ne s'est pas fermé à temps ; systemd termine les processus restants"
+}
+
+case ${1:-} in
+--stop)
+	is_uint "$STOP_TIMEOUT" || STOP_TIMEOUT=30
+	do_stop
+	exit 0
+	;;
+--print)
+	validate_conf
+	build_command
+	printf '%q ' "${CMD[@]}"
+	echo
+	exit 0
+	;;
+"") ;;
+*) die $EXIT_CONFIG "option inconnue : $1 (attendu : --stop, --print)" ;;
+esac
+
+validate_conf
+build_command
+wait_for_free_slot
+
+# Variables héritées d'une ancienne session de bureau (Plasma les importe dans
+# le gestionnaire systemd utilisateur) : gamescope ne doit pas s'imbriquer dedans.
+unset DISPLAY WAYLAND_DISPLAY
+
+log "configuration : $CONF"
+log "lancement : ${CMD[*]}"
+exec "${CMD[@]}"

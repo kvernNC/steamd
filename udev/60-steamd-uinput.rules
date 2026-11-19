@@ -1,0 +1,6 @@
+# steamd : accès à /dev/uinput sans session active.
+# Sans session locale, la règle uaccess ne s'applique pas. Les manettes
+# virtuelles de Steam Remote Play passent par uinput, on ouvre donc le
+# périphérique à un groupe dont l'utilisateur fait partie.
+# @GROUP@ est remplacé par install.sh (par défaut : input).
+KERNEL=="uinput", SUBSYSTEM=="misc", GROUP="@GROUP@", MODE="0660", OPTIONS+="static_node=uinput"

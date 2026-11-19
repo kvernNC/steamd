@@ -1,0 +1,49 @@
+#!/usr/bin/env bash
+# steamd-session-hook : arrête steamd à l'ouverture d'une session graphique
+# locale et le relance à sa fermeture.
+#
+# Appelé par steamd-session-hook.service, qui est rattaché à
+# graphical-session.target :
+#   steamd-session-hook login    (ExecStart, avant le démarrage du bureau)
+#   steamd-session-hook logout   (ExecStop, à la fermeture du bureau)
+set -euo pipefail
+
+log() { printf 'steamd-session-hook: %s\n' "$*" >&2; }
+
+CONF="${STEAMD_CONF:-${XDG_CONFIG_HOME:-$HOME/.config}/steamd/steamd.conf}"
+STOP_ON_LOCAL_LOGIN=true
+RESTART_ON_LOCAL_LOGOUT=true
+if [[ -r $CONF ]]; then
+	# shellcheck source=/dev/null
+	source "$CONF"
+fi
+
+case ${1:-} in
+login)
+	if [[ $STOP_ON_LOCAL_LOGIN != true ]]; then
+		log "STOP_ON_LOCAL_LOGIN=$STOP_ON_LOCAL_LOGIN : steamd n'est pas arrêté"
+		exit 0
+	fi
+	if systemctl --user is-active --quiet steamd.service; then
+		log "session graphique locale : arrêt de steamd"
+		# Bloquant : le bureau (et son Steam) ne démarre qu'une fois steamd arrêté.
+		systemctl --user stop steamd.service
+	fi
+	;;
+logout)
+	if [[ $RESTART_ON_LOCAL_LOGOUT != true ]]; then
+		log "RESTART_ON_LOCAL_LOGOUT=$RESTART_ON_LOCAL_LOGOUT : steamd n'est pas relancé"
+		exit 0
+	fi
+	if systemctl --user is-enabled --quiet steamd.service; then
+		log "fin de session graphique : relance de steamd"
+		# Non bloquant : steamd-launch attend lui-même que le Steam du bureau
+		# et la session soient fermés.
+		systemctl --user start --no-block steamd.service
+	fi
+	;;
+*)
+	echo "usage : $0 login|logout" >&2
+	exit 2
+	;;
+esac

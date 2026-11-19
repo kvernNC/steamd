@@ -1,0 +1,44 @@
+# steamd — configuration
+# Copier dans ~/.config/steamd/steamd.conf (install.sh le fait s'il n'existe pas).
+# Le fichier est lu par bash : syntaxe VAR=valeur, sans espace autour du "=".
+# Les commentaires en fin de ligne sont autorisés.
+
+# --- Affichage gamescope ------------------------------------------------------
+# Résolution de sortie de gamescope (-W/-H) et fréquence (-r).
+WIDTH=1280
+HEIGHT=800
+REFRESH=60
+# Résolution vue par l'application (-w/-h). Vide = identique à WIDTH/HEIGHT.
+APP_WIDTH=""
+APP_HEIGHT=""
+
+# --- Steam --------------------------------------------------------------------
+# Mode de capture pour Remote Play :
+#   pipewire-dmabuf  -> steam -pipewire-dmabuf (par défaut)
+#   pipewire         -> steam -pipewire        (plan B si écran noir)
+#   none             -> aucune option          (plan C)
+STEAM_CAPTURE=pipewire-dmabuf
+# Interface de Steam : -tenfoot (Big Picture) ou -gamepadui.
+STEAM_UI_ARG="-tenfoot"
+
+# Options supplémentaires, séparées par des espaces (pas de guillemets imbriqués).
+# Exemple de logs gamescope détaillés : GAMESCOPE_EXTRA_ARGS="--verbose"
+GAMESCOPE_EXTRA_ARGS=""
+STEAM_EXTRA_ARGS=""
+
+# --- Cohabitation avec la session de bureau -----------------------------------
+# Arrêter steamd quand une session graphique locale s'ouvre.
+STOP_ON_LOCAL_LOGIN=true
+# Relancer steamd quand cette session graphique se ferme.
+RESTART_ON_LOCAL_LOGOUT=true
+
+# --- Délais (secondes) --------------------------------------------------------
+# Au démarrage : attente maximale qu'un autre Steam ou une session graphique
+# se termine avant d'abandonner.
+STEAM_WAIT_TIMEOUT=60
+# À l'arrêt : temps laissé à Steam pour se fermer proprement.
+STOP_TIMEOUT=30
+
+# --- Binaires (rarement utile) ------------------------------------------------
+GAMESCOPE_BIN=gamescope
+STEAM_BIN=steam

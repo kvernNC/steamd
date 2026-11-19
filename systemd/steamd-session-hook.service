@@ -1,0 +1,17 @@
+[Unit]
+Description=steamd : arrêt et reprise selon la session graphique locale
+Documentation=https://github.com/kvernNC/steamd
+# Démarré avec la session graphique (Plasma lance graphical-session-pre.target
+# puis graphical-session.target) et arrêté avec elle.
+PartOf=graphical-session.target
+Before=graphical-session-pre.target graphical-session.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=%h/.local/bin/steamd-session-hook login
+ExecStop=%h/.local/bin/steamd-session-hook logout
+TimeoutStartSec=90
+
+[Install]
+WantedBy=graphical-session-pre.target graphical-session.target
