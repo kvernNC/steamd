@@ -4,7 +4,7 @@
 #   steamd-setup --undo [options]      désactive les services
 #     --remove-group    retirer l'utilisateur du groupe input
 #     --disable-linger  désactiver le linger
-#     --purge           supprimer ~/.config/steamd
+#     --purge           supprimer ~/.config/steamd et le HOME du client steamd
 set -euo pipefail
 
 [[ $EUID -eq 0 ]] && { echo "Lancer en utilisateur, pas en root." >&2; exit 1; }
@@ -40,10 +40,13 @@ if [[ ${1:-} != --undo ]]; then
     echo "→ services utilisateur"
     systemctl --user daemon-reload
     systemctl --user enable pipewire.socket pipewire-pulse.socket wireplumber.service
-    systemctl --user enable steamd.service steamd-session-hook.service
+    systemctl --user disable steamd-session-hook.service 2>/dev/null || true
+    systemctl --user enable steamd.service
 
     echo
-    echo "Prêt. steamd démarrera au prochain boot (ou : systemctl --user start steamd, hors session graphique)."
+    echo "Prêt. Première configuration du client steamd (une seule fois, dans la session de bureau) :"
+    echo "  steamd-launch --setup   connexion + Steam Guard, Remote Play activé, bibliothèque du bureau ajoutée"
+    echo "Puis : systemctl --user start steamd (ou redémarrer)."
     $reboot_needed && echo "Redémarrage nécessaire pour la prise en compte du groupe input."
     echo "Diagnostic : steamd-doctor"
     exit 0
@@ -61,7 +64,7 @@ for a in "$@"; do
 done
 
 echo "→ arrêt et désactivation des services"
-systemctl --user disable --now steamd-session-hook.service steamd.service 2>/dev/null || true
+systemctl --user disable --now steamd.service 2>/dev/null || true
 systemctl --user reset-failed steamd.service 2>/dev/null || true
 
 if $remove_group && in_group; then
@@ -73,6 +76,9 @@ if $disable_linger; then
     sudo loginctl disable-linger "$USER"
 fi
 if $purge; then
-    echo "→ suppression de $CONFDIR"
-    rm -rf "$CONFDIR"
+    STEAMD_HOME="${XDG_DATA_HOME:-$HOME/.local/share}/steamd-home"
+    # shellcheck source=/dev/null
+    [[ -r $CONFDIR/steamd.conf ]] && source "$CONFDIR/steamd.conf"
+    echo "→ suppression de $CONFDIR et $STEAMD_HOME"
+    rm -rf "$CONFDIR" "$STEAMD_HOME"
 fi

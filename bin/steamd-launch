@@ -1,43 +1,41 @@
 #!/usr/bin/env bash
 # Lance gamescope headless + Steam Big Picture selon ~/.config/steamd/steamd.conf.
-# --stop : arrêt propre de Steam (appelé par ExecStop).
+# Steam tourne avec un HOME dédié (STEAMD_HOME) : client distinct du Steam du bureau,
+# qui peut tourner en parallèle. Seule la bibliothèque de jeux est partagée.
+#   --stop   arrêt propre de Steam (appelé par ExecStop)
+#   --setup  même client en fenêtre dans la session de bureau (connexion, Remote Play, bibliothèque)
 set -euo pipefail
 
 CONF="${XDG_CONFIG_HOME:-$HOME/.config}/steamd/steamd.conf"
 WIDTH=1280 HEIGHT=800 REFRESH=60 STEAM_CAPTURE=pipewire-dmabuf
 GAMESCOPE_EXTRA_ARGS="" STEAM_EXTRA_ARGS=""
-STOP_ON_LOCAL_LOGIN=true
+STEAMD_HOME="${XDG_DATA_HOME:-$HOME/.local/share}/steamd-home"
 # shellcheck source=/dev/null
 [[ -r $CONF ]] && source "$CONF"
 
 log() { echo "steamd: $*" >&2; }
-steam_running() { pgrep -u "$UID" -x steam >/dev/null; }
 
-if [[ ${1:-} == --stop ]]; then
-    if steam_running; then
-        log "arrêt de Steam"
+mkdir -p "$STEAMD_HOME"
+export HOME=$STEAMD_HOME
+export XDG_CONFIG_HOME=$HOME/.config XDG_DATA_HOME=$HOME/.local/share XDG_CACHE_HOME=$HOME/.cache
+
+case ${1:-} in
+    --stop)
         steam -shutdown >/dev/null 2>&1 || true
         for _ in $(seq 40); do
-            [[ -n ${MAINPID:-} ]] && ! kill -0 "$MAINPID" 2>/dev/null && exit 0
-            steam_running || exit 0
+            [[ -n ${MAINPID:-} ]] && kill -0 "$MAINPID" 2>/dev/null || exit 0
             sleep 1
         done
         log "Steam ne s'est pas arrêté, systemd termine les processus"
-    fi
-    exit 0
-fi
-
-if [[ $STOP_ON_LOCAL_LOGIN == true ]] && systemctl --user -q is-active graphical-session.target; then
-    log "session graphique locale active, steamd ne démarre pas"
-    exit 0
-fi
-
-# Laisse le temps au Steam du bureau de se fermer (déconnexion en cours)
-for _ in $(seq 30); do steam_running || break; sleep 1; done
-if steam_running; then
-    log "un autre Steam tourne déjà pour $USER, abandon"
-    exit 1
-fi
+        exit 0 ;;
+    --setup)
+        if systemctl --user -q is-active steamd.service; then
+            log "arrêter d'abord le service : systemctl --user stop steamd"
+            exit 1
+        fi
+        log "client steamd en fenêtre (HOME=$HOME) ; le fermer complètement à la fin"
+        exec steam ;;
+esac
 
 case $STEAM_CAPTURE in
     pipewire-dmabuf) capture=(-pipewire-dmabuf) ;;

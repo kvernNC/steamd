@@ -14,11 +14,14 @@ UNITS="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
 SHARE="${XDG_DATA_HOME:-$HOME/.local/share}/steamd"
 
 echo "→ scripts dans $BIN"
-install -Dm755 -t "$BIN" bin/steamd-launch bin/steamd-doctor bin/steamd-session-hook bin/steamd-setup
+install -Dm755 -t "$BIN" bin/steamd-launch bin/steamd-doctor bin/steamd-setup
 install -Dm644 config/steamd.conf.example "$SHARE/steamd.conf.example"
 
 echo "→ unités dans $UNITS"
 mkdir -p "$UNITS"
+# Ancienne version : hook de session supprimé
+systemctl --user disable --now steamd-session-hook.service 2>/dev/null || true
+rm -f "$UNITS/steamd-session-hook.service" "$BIN/steamd-session-hook"
 for u in systemd/*.service; do
     sed "s|@BINDIR@|$BIN|" "$u" > "$UNITS/$(basename "$u")"
 done

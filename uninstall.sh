@@ -15,9 +15,9 @@ SHARE="${XDG_DATA_HOME:-$HOME/.local/share}/steamd"
 bin/steamd-setup --undo "$@"
 
 echo "→ unités et scripts"
-rm -f "$UNITS/steamd.service" "$UNITS/steamd-session-hook.service"
+rm -f "$UNITS/steamd.service"
 systemctl --user daemon-reload
-rm -f "$BIN/steamd-launch" "$BIN/steamd-doctor" "$BIN/steamd-session-hook" "$BIN/steamd-setup"
+rm -f "$BIN/steamd-launch" "$BIN/steamd-doctor" "$BIN/steamd-setup"
 rm -rf "$SHARE"
 
 echo "→ règle udev et module (sudo)"

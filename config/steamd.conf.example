@@ -5,5 +5,5 @@ REFRESH=60
 STEAM_CAPTURE=pipewire-dmabuf   # pipewire-dmabuf | pipewire | none
 GAMESCOPE_EXTRA_ARGS=""         # ex. "--verbose"
 STEAM_EXTRA_ARGS=""
-STOP_ON_LOCAL_LOGIN=true        # arrêter steamd à l'ouverture d'une session graphique locale
-RESTART_ON_LOCAL_LOGOUT=true    # le relancer à la fermeture de cette session
+# HOME dédié du client Steam de steamd (distinct du Steam du bureau)
+#STEAMD_HOME="$HOME/.local/share/steamd-home"

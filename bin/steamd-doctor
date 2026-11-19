@@ -8,6 +8,9 @@ bad() { printf '\e[31m[KO]\e[0m %s\n     → %s\n' "$1" "$2"; ko=$((ko + 1)); }
 check() { local msg=$1 fix=$2; shift 2; if "$@" >/dev/null 2>&1; then ok "$msg"; else bad "$msg" "$fix"; fi; }
 
 CONF="${XDG_CONFIG_HOME:-$HOME/.config}/steamd/steamd.conf"
+STEAMD_HOME="${XDG_DATA_HOME:-$HOME/.local/share}/steamd-home"
+# shellcheck source=/dev/null
+[[ -r $CONF ]] && source "$CONF"
 
 echo "== Binaires"
 check "gamescope installé ($(gamescope --version 2>&1 | head -n1))" "sudo pacman -S gamescope" command -v gamescope
@@ -15,6 +18,8 @@ check "steam installé" "sudo pacman -S steam" command -v steam
 
 echo "== Configuration"
 check "configuration $CONF" "relancer ./install.sh ou copier config/steamd.conf.example" test -r "$CONF"
+check "client steamd connecté ($STEAMD_HOME)" "steamd-launch --setup, depuis la session de bureau" \
+    test -s "$STEAMD_HOME/.local/share/Steam/config/loginusers.vdf"
 
 echo "== Linger"
 check "linger activé" "loginctl enable-linger $USER" \
@@ -51,20 +56,13 @@ check "gestionnaire systemd utilisateur dans le groupe input" "redémarrer le PC
 
 echo "== Service"
 check "steamd.service activé" "systemctl --user enable steamd.service" systemctl --user -q is-enabled steamd.service
-check "steamd-session-hook.service activé" "systemctl --user enable steamd-session-hook.service" systemctl --user -q is-enabled steamd-session-hook.service
-if systemctl --user -q is-active graphical-session.target; then
-    echo "     (session graphique locale active : steamd arrêté est normal)"
-else
-    check "steamd.service actif" "journalctl --user -u steamd -e" systemctl --user -q is-active steamd.service
-fi
-n=$(pgrep -u "$UID" -xc steam)
-check "un seul Steam en cours ($n)" "pkill -u $USER -x steam ; puis systemctl --user restart steamd" test "$n" -le 1
+check "steamd.service actif" "journalctl --user -u steamd -e" systemctl --user -q is-active steamd.service
 
 echo "== Réseau"
 echo "     Remote Play : UDP 27031-27036, TCP 27036-27037 à ouvrir si un pare-feu est actif"
 
 echo "== Derniers logs"
-journalctl --user -u steamd -u steamd-session-hook -n 30 --no-pager 2>/dev/null
+journalctl --user -u steamd -n 30 --no-pager 2>/dev/null
 
 echo
 ((ko == 0)) && echo "Tout est OK." || echo "$ko point(s) KO."

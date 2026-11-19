@@ -13,7 +13,7 @@ package() {
     local src="$startdir/../.."
 
     install -Dm755 -t "$pkgdir/usr/bin" \
-        "$src"/bin/steamd-{launch,doctor,session-hook,setup}
+        "$src"/bin/steamd-{launch,doctor,setup}
 
     install -dm755 "$pkgdir/usr/lib/systemd/user"
     for u in "$src"/systemd/*.service; do

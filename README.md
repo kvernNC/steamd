@@ -31,7 +31,7 @@ Permettre ce parcours, sans aucune intervention physique sur le PC hôte :
 - Activation du *linger* pour que le service démarre au boot sans session.
 - Dépendances PipeWire et WirePlumber en services utilisateur (vidéo et audio sans session graphique).
 - Règle udev donnant l'accès à `/dev/uinput` sans session active (manettes virtuelles du Remote Play), par exemple via le groupe `input`.
-- Gestion du conflit avec une session de bureau : un seul Steam à la fois. Quand l'utilisateur se connecte localement, `steamd` s'arrête, et il peut redémarrer quand l'utilisateur se déconnecte (optionnel, configurable).
+- Client Steam distinct de celui du bureau : même utilisateur, mais HOME dédié (`STEAMD_HOME`). Les deux Steam tournent en parallèle, et seule la bibliothèque de jeux est partagée. Remote Play n'est activé que dans le client steamd.
 - Fichier de configuration simple : résolution, fréquence et options gamescope/Steam.
 - Script d'installation et de désinstallation idempotent.
 - Côté Deck : script de réveil (`wake-host.sh`) à ajouter comme raccourci non-Steam en mode jeu.
@@ -58,7 +58,6 @@ steamd/
 ├── bin/
 │   ├── steamd-launch           # wrapper : lit la conf, lance gamescope et Steam
 │   ├── steamd-doctor           # diagnostic
-│   └── steamd-session-hook     # arrêt et reprise selon la session locale
 ├── deck/
 │   └── wake-host.sh            # envoi du magic packet depuis le Deck
 ├── install.sh
@@ -87,8 +86,7 @@ REFRESH=60
 STEAM_CAPTURE=pipewire-dmabuf   # pipewire-dmabuf | pipewire | none
 GAMESCOPE_EXTRA_ARGS=""
 STEAM_EXTRA_ARGS=""
-STOP_ON_LOCAL_LOGIN=true
-RESTART_ON_LOCAL_LOGOUT=true
+#STEAMD_HOME="$HOME/.local/share/steamd-home"
 ```
 
 ## Exigences techniques
@@ -98,7 +96,7 @@ RESTART_ON_LOCAL_LOGOUT=true
 3. **PipeWire** : `pipewire.socket`, `pipewire-pulse.socket` et `wireplumber.service` activés en utilisateur. `steamd.service` doit être ordonné après eux.
 4. **GPU** : vérifier l'accès à `/dev/dri/renderD*` sans session. Normalement ouvert, mais le diagnostic doit le contrôler.
 5. **Entrées** : sans session, `uaccess` ne s'applique pas. Il faut une règle udev qui ouvre `/dev/uinput` à un groupe dont l'utilisateur fait partie. `install.sh` ajoute l'utilisateur au groupe et recharge udev.
-6. **Instance unique** : ne jamais laisser deux Steam tourner pour le même utilisateur. Le hook de session arrête `steamd` à l'ouverture d'une session graphique locale.
+6. **Deux clients séparés** : Steam n'autorise qu'une instance par HOME. steamd lance donc le sien avec `HOME=$STEAMD_HOME` et ne touche jamais au `~/.steam` du bureau. Comme l'UID est le même, la bibliothèque partagée et les préfixes Proton n'ont aucun problème de droits.
 7. **Robustesse** : `Restart=on-failure` avec un délai. Les logs sont lisibles via `journalctl --user -u steamd`.
 8. **Idempotence** : `install.sh` et `uninstall.sh` peuvent être relancés sans effet de bord. `uninstall.sh` retire tout ce que `install.sh` a ajouté (unité, règle udev, groupe en option, linger en option).
 
@@ -110,9 +108,16 @@ RESTART_ON_LOCAL_LOGOUT=true
 
 ## Prérequis manuels (une seule fois)
 
-1. Dans une session de bureau normale : connexion à Steam (Steam Guard) et activation de Remote Play dans les paramètres.
-2. Connecter le Deck une première fois et saisir le PIN d'appairage sur l'hôte.
-3. Fermer Steam complètement avant de lancer `steamd`.
+Dans la session de bureau, le Steam du bureau peut rester ouvert :
+
+1. `systemctl --user stop steamd`, puis `steamd-launch --setup` : le client steamd s'ouvre en fenêtre.
+2. Se connecter (Steam Guard) et activer Remote Play.
+3. Paramètres > Stockage : ajouter la bibliothèque du bureau (`~/.local/share/Steam`, ou le disque de jeux). Steam reconnaît les jeux déjà installés.
+4. Paramètres > Téléchargements : limiter les mises à jour à une plage horaire où le PC est éteint. C'est le Steam du bureau qui fait les mises à jour, pour éviter que deux clients mettent à jour le même jeu en même temps.
+5. Connecter le Deck une première fois et saisir le PIN d'appairage dans cette fenêtre.
+6. Quitter complètement ce client, puis `systemctl --user start steamd`.
+
+Côté bureau : désactiver Remote Play dans le Steam du bureau, pour que le Deck ne voie qu'un seul hôte.
 
 ## Plan de test
 
@@ -122,8 +127,8 @@ RESTART_ON_LOCAL_LOGOUT=true
 | 2 | Même commande après déconnexion du bureau | Idem. C'est ici qu'on valide uinput et PipeWire sans session |
 | 3 | `steamd.service` démarré manuellement | Idem, logs propres dans journalctl |
 | 4 | Reboot à froid, aucune connexion | Le service est actif et le Deck peut streamer |
-| 5 | Connexion au bureau en local | `steamd` s'arrête et le Steam du bureau démarre normalement |
-| 6 | Déconnexion du bureau | `steamd` redémarre, si l'option est activée |
+| 5 | Session de bureau ouverte, Steam du bureau lancé | Les deux Steam tournent. Le Deck streame depuis steamd sans gêner le bureau |
+| 6 | Jeu lancé depuis le Deck pendant que le bureau est utilisé | Le bureau n'est pas modifié (ni fenêtre ni changement de résolution) |
 | 7 | PC éteint, raccourci de réveil sur le Deck | Le PC démarre et Remote Play est disponible en moins de 60 s |
 | 8 | `steamd-doctor` | Rapport lisible, chaque point marqué OK ou KO avec une piste de correction |
 
@@ -159,15 +164,17 @@ git clone <repo> && cd steamd
 sudo reboot
 ```
 
-`install.sh` copie les scripts dans `~/.local/bin` et les unités `steamd.service` et `steamd-session-hook.service` dans `~/.config/systemd/user`, puis lance `steamd-setup`. Dans les deux cas, `steamd-setup` crée `~/.config/steamd/steamd.conf` s'il n'existe pas encore.
+`install.sh` copie les scripts dans `~/.local/bin` et l'unité `steamd.service` dans `~/.config/systemd/user`, puis lance `steamd-setup`. Dans les deux cas, `steamd-setup` crée `~/.config/steamd/steamd.conf` s'il n'existe pas encore.
 
 ### Configuration
 
 Modifier `~/.config/steamd/steamd.conf`, puis lancer `systemctl --user restart steamd`. En cas d'écran noir, passer `STEAM_CAPTURE` à `pipewire`, puis à `none`.
 
-### Session locale
+### Cohabitation avec le Steam du bureau
 
-`steamd-session-hook.service` est lié à `graphical-session.target`. Quand une session KDE s'ouvre, il arrête steamd avant le démarrage automatique de Steam. Quand elle se ferme, il relance steamd. Les options `STOP_ON_LOCAL_LOGIN` et `RESTART_ON_LOCAL_LOGOUT` règlent ce comportement.
+steamd et le Steam du bureau sont deux clients indépendants. On peut ouvrir ou fermer sa session, et lancer ou quitter le Steam du bureau, sans effet sur steamd.
+
+Le compte Steam est le même : un seul jeu peut tourner à la fois. Si un jeu est lancé sur le bureau, le Deck ne peut pas en lancer un autre (« en cours d'utilisation sur un autre ordinateur »).
 
 ### Diagnostic
 
