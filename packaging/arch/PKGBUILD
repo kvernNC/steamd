@@ -1,0 +1,29 @@
+# Paquet construit depuis l'arbre du dépôt : cd packaging/arch && makepkg -si
+pkgname=steamd
+pkgver=0.1.0
+pkgrel=1
+pkgdesc="Steam headless dans gamescope en service utilisateur, pour Steam Remote Play"
+arch=('any')
+license=('MIT')
+depends=('bash' 'gamescope' 'steam' 'pipewire' 'pipewire-pulse' 'wireplumber' 'systemd')
+backup=()
+install=steamd.install
+
+package() {
+    local src="$startdir/../.."
+
+    install -Dm755 -t "$pkgdir/usr/bin" \
+        "$src"/bin/steamd-{launch,doctor,session-hook,setup}
+
+    install -dm755 "$pkgdir/usr/lib/systemd/user"
+    for u in "$src"/systemd/*.service; do
+        sed 's|@BINDIR@|/usr/bin|' "$u" > "$pkgdir/usr/lib/systemd/user/$(basename "$u")"
+    done
+
+    install -Dm644 "$src/udev/60-steamd-uinput.rules" "$pkgdir/usr/lib/udev/rules.d/60-steamd-uinput.rules"
+    install -Dm644 "$src/udev/steamd-uinput.conf" "$pkgdir/usr/lib/modules-load.d/steamd-uinput.conf"
+    install -Dm644 "$src/config/steamd.conf.example" "$pkgdir/usr/share/steamd/steamd.conf.example"
+    install -Dm755 "$src/deck/wake-host.sh" "$pkgdir/usr/share/steamd/deck/wake-host.sh"
+    install -Dm644 "$src/README.md" "$pkgdir/usr/share/doc/steamd/README.md"
+    install -Dm644 "$src/LICENSE" "$pkgdir/usr/share/licenses/steamd/LICENSE"
+}

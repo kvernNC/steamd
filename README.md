@@ -139,3 +139,58 @@ RESTART_ON_LOCAL_LOGOUT=true
 - Les tests 1 à 8 passent.
 - Une installation sur une CachyOS propre ne demande que : cloner, `./install.sh`, les prérequis manuels, et un reboot.
 - Le README couvre l'installation, la configuration, le diagnostic et la désinstallation.
+
+## Utilisation
+
+### Installation par paquet (recommandée)
+
+```bash
+git clone <repo> && cd steamd/packaging/arch
+makepkg -si       # installe dans /usr (scripts, unités, règle udev, module uinput)
+steamd-setup      # en utilisateur : configuration, groupe input, linger, services
+sudo reboot
+```
+
+### Installation sans paquet
+
+```bash
+git clone <repo> && cd steamd
+./install.sh      # sudo demandé pour udev, le groupe input et le linger
+sudo reboot
+```
+
+`install.sh` copie les scripts dans `~/.local/bin` et les unités `steamd.service` et `steamd-session-hook.service` dans `~/.config/systemd/user`, puis lance `steamd-setup`. Dans les deux cas, `steamd-setup` crée `~/.config/steamd/steamd.conf` s'il n'existe pas encore.
+
+### Configuration
+
+Modifier `~/.config/steamd/steamd.conf`, puis lancer `systemctl --user restart steamd`. En cas d'écran noir, passer `STEAM_CAPTURE` à `pipewire`, puis à `none`.
+
+### Session locale
+
+`steamd-session-hook.service` est lié à `graphical-session.target`. Quand une session KDE s'ouvre, il arrête steamd avant le démarrage automatique de Steam. Quand elle se ferme, il relance steamd. Les options `STOP_ON_LOCAL_LOGIN` et `RESTART_ON_LOCAL_LOGOUT` règlent ce comportement.
+
+### Diagnostic
+
+```bash
+steamd-doctor
+journalctl --user -u steamd -f
+```
+
+### Désinstallation
+
+```bash
+# paquet
+steamd-setup --undo [--remove-group] [--disable-linger] [--purge]
+sudo pacman -R steamd
+
+# sans paquet
+./uninstall.sh [--remove-group] [--disable-linger] [--purge]
+```
+
+### Steam Deck
+
+Renseigner `MAC` (et au besoin `BROADCAST`) en tête de `deck/wake-host.sh`. Copier le script sur le Deck, le rendre exécutable, puis l'ajouter comme jeu non-Steam depuis le mode bureau.
+
+## Licence
+
+MIT, voir [LICENSE](LICENSE).

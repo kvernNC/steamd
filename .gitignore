@@ -1,0 +1,3 @@
+packaging/arch/*.pkg.tar.*
+packaging/arch/pkg/
+packaging/arch/src/

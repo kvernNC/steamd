@@ -1,0 +1,2 @@
+# steamd : /dev/uinput accessible au groupe input, même sans session (uaccess inopérant)
+KERNEL=="uinput", SUBSYSTEM=="misc", GROUP="input", MODE="0660", OPTIONS+="static_node=uinput"

@@ -1,0 +1,14 @@
+[Unit]
+Description=steamd : arrêt et reprise selon la session graphique locale
+PartOf=graphical-session.target
+# Steam du bureau (autostart XDG) ne doit démarrer qu'une fois steamd arrêté
+Before=xdg-desktop-autostart.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=@BINDIR@/steamd-session-hook login
+ExecStop=@BINDIR@/steamd-session-hook logout
+
+[Install]
+WantedBy=graphical-session.target

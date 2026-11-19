@@ -1,0 +1,22 @@
+_reload() {
+    modprobe uinput 2>/dev/null || true
+    udevadm control --reload 2>/dev/null || true
+    udevadm trigger --action=change --sysname-match=uinput 2>/dev/null || true
+}
+
+post_install() {
+    _reload
+    echo ">>> steamd : lancer « steamd-setup » en utilisateur (groupe input, linger, services), puis redémarrer."
+}
+
+post_upgrade() {
+    _reload
+}
+
+pre_remove() {
+    echo ">>> steamd : avant de désinstaller, lancer « steamd-setup --undo [--remove-group] [--disable-linger] [--purge] » en utilisateur."
+}
+
+post_remove() {
+    udevadm control --reload 2>/dev/null || true
+}

@@ -1,0 +1,71 @@
+#!/usr/bin/env bash
+# Diagnostic steamd : chaque point OK/KO avec une piste de correction.
+set -uo pipefail
+
+ko=0
+ok()  { printf '\e[32m[OK]\e[0m %s\n' "$1"; }
+bad() { printf '\e[31m[KO]\e[0m %s\n     → %s\n' "$1" "$2"; ko=$((ko + 1)); }
+check() { local msg=$1 fix=$2; shift 2; if "$@" >/dev/null 2>&1; then ok "$msg"; else bad "$msg" "$fix"; fi; }
+
+CONF="${XDG_CONFIG_HOME:-$HOME/.config}/steamd/steamd.conf"
+
+echo "== Binaires"
+check "gamescope installé ($(gamescope --version 2>&1 | head -n1))" "sudo pacman -S gamescope" command -v gamescope
+check "steam installé" "sudo pacman -S steam" command -v steam
+
+echo "== Configuration"
+check "configuration $CONF" "relancer ./install.sh ou copier config/steamd.conf.example" test -r "$CONF"
+
+echo "== Linger"
+check "linger activé" "loginctl enable-linger $USER" \
+    bash -c '[[ $(loginctl show-user "$USER" -p Linger --value) == yes ]]'
+
+echo "== PipeWire"
+for u in pipewire.socket pipewire-pulse.socket wireplumber.service; do
+    check "$u activé" "systemctl --user enable --now $u" systemctl --user -q is-enabled "$u"
+done
+for u in pipewire.service wireplumber.service; do
+    check "$u actif" "systemctl --user start $u ; journalctl --user -u $u" systemctl --user -q is-active "$u"
+done
+
+echo "== GPU"
+shopt -s nullglob
+render=(/dev/dri/renderD*)
+if ((${#render[@]} == 0)); then
+    bad "nœud /dev/dri/renderD*" "pilote amdgpu non chargé ? lsmod | grep amdgpu"
+fi
+for n in "${render[@]}"; do
+    check "lecture/écriture $n" "ls -l $n ; ajouter $USER au groupe render" test -r "$n" -a -w "$n"
+done
+
+echo "== Entrées (uinput)"
+check "/dev/uinput présent" "sudo modprobe uinput ; vérifier /etc/modules-load.d/steamd-uinput.conf" test -c /dev/uinput
+check "/dev/uinput appartient au groupe input" "règle /etc/udev/rules.d/60-steamd-uinput.rules puis sudo udevadm trigger" \
+    bash -c '[[ $(stat -c %G /dev/uinput) == input ]]'
+check "$USER membre du groupe input" "sudo usermod -aG input $USER" \
+    bash -c 'id -nG "$USER" | tr " " "\n" | grep -qx input'
+mgr=$(pgrep -u "$UID" -xo systemd)
+gid=$(getent group input | cut -d: -f3)
+check "gestionnaire systemd utilisateur dans le groupe input" "redémarrer le PC (le groupe n'est pris en compte qu'au prochain démarrage du gestionnaire)" \
+    bash -c "grep '^Groups:' /proc/${mgr:-0}/status | tr -s ' \t' '\n' | grep -qx '${gid:-x}'"
+
+echo "== Service"
+check "steamd.service activé" "systemctl --user enable steamd.service" systemctl --user -q is-enabled steamd.service
+check "steamd-session-hook.service activé" "systemctl --user enable steamd-session-hook.service" systemctl --user -q is-enabled steamd-session-hook.service
+if systemctl --user -q is-active graphical-session.target; then
+    echo "     (session graphique locale active : steamd arrêté est normal)"
+else
+    check "steamd.service actif" "journalctl --user -u steamd -e" systemctl --user -q is-active steamd.service
+fi
+n=$(pgrep -u "$UID" -xc steam)
+check "un seul Steam en cours ($n)" "pkill -u $USER -x steam ; puis systemctl --user restart steamd" test "$n" -le 1
+
+echo "== Réseau"
+echo "     Remote Play : UDP 27031-27036, TCP 27036-27037 à ouvrir si un pare-feu est actif"
+
+echo "== Derniers logs"
+journalctl --user -u steamd -u steamd-session-hook -n 30 --no-pager 2>/dev/null
+
+echo
+((ko == 0)) && echo "Tout est OK." || echo "$ko point(s) KO."
+exit $((ko > 0))

@@ -1,0 +1,78 @@
+#!/usr/bin/env bash
+# Partie utilisateur de l'installation de steamd (idempotente).
+#   steamd-setup                       configuration, groupe input, linger, services
+#   steamd-setup --undo [options]      désactive les services
+#     --remove-group    retirer l'utilisateur du groupe input
+#     --disable-linger  désactiver le linger
+#     --purge           supprimer ~/.config/steamd
+set -euo pipefail
+
+[[ $EUID -eq 0 ]] && { echo "Lancer en utilisateur, pas en root." >&2; exit 1; }
+
+CONFDIR="${XDG_CONFIG_HOME:-$HOME/.config}/steamd"
+in_group() { id -nG "$USER" | tr ' ' '\n' | grep -qx input; }
+
+if [[ ${1:-} != --undo ]]; then
+    for c in gamescope steam pipewire wireplumber; do
+        command -v "$c" >/dev/null || echo "Attention : $c introuvable (sudo pacman -S $c)" >&2
+    done
+
+    if [[ ! -e $CONFDIR/steamd.conf ]]; then
+        for ex in "${XDG_DATA_HOME:-$HOME/.local/share}/steamd/steamd.conf.example" /usr/share/steamd/steamd.conf.example; do
+            if [[ -r $ex ]]; then
+                echo "→ configuration $CONFDIR/steamd.conf"
+                install -Dm644 "$ex" "$CONFDIR/steamd.conf"
+                break
+            fi
+        done
+    fi
+
+    reboot_needed=false
+    if ! in_group; then
+        echo "→ ajout de $USER au groupe input (sudo)"
+        sudo usermod -aG input "$USER"
+        reboot_needed=true
+    fi
+
+    echo "→ linger (sudo)"
+    sudo loginctl enable-linger "$USER"
+
+    echo "→ services utilisateur"
+    systemctl --user daemon-reload
+    systemctl --user enable pipewire.socket pipewire-pulse.socket wireplumber.service
+    systemctl --user enable steamd.service steamd-session-hook.service
+
+    echo
+    echo "Prêt. steamd démarrera au prochain boot (ou : systemctl --user start steamd, hors session graphique)."
+    $reboot_needed && echo "Redémarrage nécessaire pour la prise en compte du groupe input."
+    echo "Diagnostic : steamd-doctor"
+    exit 0
+fi
+
+shift
+remove_group=false disable_linger=false purge=false
+for a in "$@"; do
+    case $a in
+        --remove-group)   remove_group=true ;;
+        --disable-linger) disable_linger=true ;;
+        --purge)          purge=true ;;
+        *) echo "Option inconnue : $a" >&2; exit 2 ;;
+    esac
+done
+
+echo "→ arrêt et désactivation des services"
+systemctl --user disable --now steamd-session-hook.service steamd.service 2>/dev/null || true
+systemctl --user reset-failed steamd.service 2>/dev/null || true
+
+if $remove_group && in_group; then
+    echo "→ retrait du groupe input (sudo)"
+    sudo gpasswd -d "$USER" input
+fi
+if $disable_linger; then
+    echo "→ linger désactivé (sudo)"
+    sudo loginctl disable-linger "$USER"
+fi
+if $purge; then
+    echo "→ suppression de $CONFDIR"
+    rm -rf "$CONFDIR"
+fi

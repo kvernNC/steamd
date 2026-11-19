@@ -1,0 +1,17 @@
+[Unit]
+Description=Steam headless (gamescope) pour Steam Remote Play
+Wants=pipewire.socket pipewire-pulse.socket wireplumber.service
+After=pipewire.socket pipewire-pulse.socket wireplumber.service
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+[Service]
+Type=simple
+ExecStart=@BINDIR@/steamd-launch
+ExecStop=@BINDIR@/steamd-launch --stop
+Restart=on-failure
+RestartSec=10
+TimeoutStopSec=45
+
+[Install]
+WantedBy=default.target
