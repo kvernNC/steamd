@@ -31,7 +31,8 @@ Permettre ce parcours, sans aucune intervention physique sur le PC hôte :
 - Activation du *linger* pour que le service démarre au boot sans session.
 - Dépendances PipeWire et WirePlumber en services utilisateur (vidéo et audio sans session graphique).
 - Règle udev donnant l'accès à `/dev/uinput` sans session active (manettes virtuelles du Remote Play), par exemple via le groupe `input`.
-- Gestion du conflit avec une session de bureau : un seul Steam à la fois. Par défaut, **le Steam de la session graphique n'est jamais coupé** : quand quelqu'un utilise le PC, `steamd` ferme son Steam headless et passe en veille, puis reprend après la déconnexion, une fois le Steam du bureau fermé. Ce comportement est configurable.
+- Gestion du conflit avec une session de bureau : un seul Steam à la fois, et **une partie en cours n'est jamais interrompue**, quel que soit le Steam qui la fait tourner. Le Steam du bureau n'est jamais coupé. Si quelqu'un se connecte pendant une partie Remote Play, la partie continue et le bureau récupère Steam à la fin. Ce comportement est configurable.
+- Gestion de l'énergie : veille bloquée pendant une partie Remote Play. En option, mise en veille ou extinction du PC quand il tourne sans session ni partie.
 - Fichier de configuration simple : résolution, fréquence et options gamescope/Steam.
 - Script d'installation et de désinstallation idempotent.
 - Côté Deck : script de réveil (`wake-host.sh`) à ajouter comme raccourci non-Steam en mode jeu.
@@ -56,6 +57,8 @@ steamd/
 │   └── steamd-session-hook.service # suit graphical-session.target
 ├── udev/
 │   └── 60-steamd-uinput.rules
+├── polkit/
+│   └── 60-steamd.rules         # veille / extinction sans session
 ├── bin/
 │   ├── steamd-launch           # wrapper : lit la conf, lance gamescope et Steam
 │   ├── steamd-doctor           # diagnostic
@@ -100,6 +103,7 @@ Ce que fait `install.sh` (relançable sans risque) :
 | Configuration | `~/.config/steamd/steamd.conf` copié depuis l'exemple, **seulement s'il n'existe pas** |
 | udev | `/etc/udev/rules.d/60-steamd-uinput.rules` (groupe `input` par défaut, `--group NOM` pour changer) |
 | Module | `/etc/modules-load.d/steamd-uinput.conf` pour charger `uinput` au boot |
+| polkit | `/etc/polkit-1/rules.d/60-steamd.rules` : autorise l'utilisateur à mettre en veille ou éteindre le PC sans session (pour `IDLE_ACTION`) |
 | Groupe | ajoute l'utilisateur au groupe, s'il n'y est pas déjà |
 | Linger | `loginctl enable-linger $USER`, s'il n'est pas déjà activé |
 | PipeWire | `pipewire.socket`, `pipewire-pulse.socket` et `wireplumber.service` activés en utilisateur |
@@ -123,6 +127,13 @@ STEAM_UI_ARG="-tenfoot"         # ou -gamepadui
 GAMESCOPE_EXTRA_ARGS=""
 STEAM_EXTRA_ARGS=""
 DESKTOP_SESSION_POLICY=yield    # yield | takeover
+HANDOVER_DELAY=15               # après une partie, délai avant de rendre Steam au bureau
+RESUME_DESKTOP_STEAM=true       # lancer le Steam du bureau après le passage de main
+DESKTOP_STEAM_ARGS=""           # ex. "-silent"
+NOTIFY=true                     # notifications sur le bureau (libnotify)
+INHIBIT_SLEEP_DURING_GAME=true  # bloquer la veille pendant une partie Remote Play
+IDLE_ACTION=none                # none | suspend | poweroff, sans session ni partie
+IDLE_TIMEOUT=1800               # au bout de 30 min
 POLL_INTERVAL=5                 # intervalle entre deux vérifications
 RESTART_DELAY=10                # délai de relance après une fin inattendue
 STOP_TIMEOUT=30                 # temps laissé à Steam pour se fermer proprement
@@ -146,20 +157,30 @@ systemctl --user restart steamd
 
 `steamd.service` est un service **permanent** : activé au boot, il ne s'arrête jamais de lui-même (`Restart=always`). Il exécute `steamd-launch`, un superviseur qui réévalue la situation toutes les `POLL_INTERVAL` secondes :
 
+**Règle de base : une partie en cours n'est jamais interrompue, quel que soit le Steam qui la fait tourner.** Chaque jeu lancé par Steam passe par un processus `reaper SteamLaunch AppId=…`, c'est ainsi que `steamd` repère une partie.
+
 | Situation | État | Action |
 |---|---|---|
-| Aucune session graphique locale, aucun autre Steam | `running` | Steam headless lancé dans gamescope (et relancé s'il plante) |
-| Session graphique locale ouverte, politique `yield` (défaut) | `standby` | Steam headless fermé proprement ; le Steam du bureau a la priorité |
+| Personne sur le PC, aucun autre Steam | `running` | Steam headless lancé dans gamescope (et relancé s'il plante) |
+| Connexion au bureau, pas de partie Remote Play | `standby` | Steam headless fermé proprement *avant* le démarrage du bureau ; le Steam du bureau démarre normalement |
+| Connexion au bureau **pendant une partie Remote Play** | `busy` | La partie continue. Le bureau reçoit une notification « Steam est utilisé en Remote Play (jeu X), il s'ouvrira ici à la fin de la partie ». `HANDOVER_DELAY` secondes après la fin de la partie, Steam headless est fermé et le Steam du bureau lancé |
+| Jeu lancé au bureau, absence, session verrouillée | `standby` | Rien ne change : une session verrouillée reste ouverte, la partie continue. La mise en veille éventuelle relève de KDE |
 | Un Steam lancé hors de steamd tourne encore (bureau, terminal…) | `standby` | **jamais tué** : steamd attend qu'il se ferme, puis reprend la main |
+| Partie Remote Play en cours | `running`/`busy` | Mise en veille du PC bloquée (`systemd-inhibit`), y compris celle de KDE |
+| Aucune session (ni bureau, ni SSH) et aucune partie depuis `IDLE_TIMEOUT` | `running` | `IDLE_ACTION` : rien (défaut), mise en veille ou extinction |
 | Fin inattendue de gamescope ou de Steam | `backoff` | relance après `RESTART_DELAY` × nombre d'échecs rapprochés (300 s max) |
 
+Limite : `steamd` sait repérer un **jeu lancé**, pas un stream ouvert sur le menu de Big Picture sans jeu. Dans ce cas, une connexion au bureau reprend la main tout de suite, sans qu'aucune partie soit perdue.
+
 - **Politique `takeover`** : Steam headless reste actif même pendant une session de bureau. Le Steam du bureau s'ouvre alors *dans* l'instance headless, invisible à l'écran. C'est utile seulement si le PC sert surtout de serveur.
-- **`steamd-session-hook.service`** est rattaché à `graphical-session.target`, que Plasma démarre à la connexion. À la connexion, il s'exécute *avant* le bureau (`Type=oneshot`, donc bloquant) : il réveille le superviseur (SIGUSR1) et attend qu'il soit en veille. Le Steam du bureau démarre ensuite normalement. À la déconnexion, il réveille le superviseur pour une reprise immédiate. Une connexion SSH n'ouvre pas de session graphique et n'a aucun effet.
+- **`steamd-session-hook.service`** est rattaché à `graphical-session.target`, que Plasma démarre à la connexion. À la connexion, il s'exécute *avant* le bureau (`Type=oneshot`, donc bloquant) : il réveille le superviseur (SIGUSR1) et attend qu'il soit en veille, ou en `busy` si une partie Remote Play est en cours. Le Steam du bureau démarre ensuite normalement. À la déconnexion, il réveille le superviseur pour une reprise immédiate. Une connexion SSH n'ouvre pas de session graphique et n'a aucun effet.
 - **Arrêt de Steam headless** : `steam -shutdown`, puis `STOP_TIMEOUT` secondes de délai, puis SIGTERM et enfin SIGKILL sur le groupe de processus gamescope. Un dernier balayage du cgroup du service garantit qu'aucun reste ne survit à la mise en veille.
+- **Steam du bureau relancé par steamd** : il démarre dans une unité transitoire (`systemd-run --user`, `app.slice`) qui hérite de l'environnement graphique importé par Plasma.
+- **Veille et extinction sans session** : un utilisateur sans session active n'a pas le droit de mettre le PC en veille. La règle polkit installée par `install.sh` le lui accorde. Le compteur d'inactivité repart de zéro à chaque sortie de veille.
 - **Environnement** : `DISPLAY` et `WAYLAND_DISPLAY` hérités d'une ancienne session Plasma sont retirés avant de lancer gamescope.
 - **Code de sortie `2`** : configuration invalide. C'est le seul cas où systemd ne relance pas le service.
 
-L'état courant (`running`, `standby`, `backoff`, `stopped`) et sa raison s'affichent avec :
+L'état courant (`running`, `busy`, `standby`, `backoff`, `stopped`) et sa raison s'affichent avec :
 
 ```bash
 steamd-launch --status
@@ -247,6 +268,10 @@ Le mode jeu n'affiche rien : chaque envoi est journalisé dans `~/.local/state/s
 | 5 | Connexion au bureau en local | `steamd` passe en `standby` (le service reste actif) et le Steam du bureau démarre normalement |
 | 6 | Déconnexion du bureau | `steamd` repasse en `running` dès que le Steam du bureau est fermé |
 | 6b | Steam du bureau ouvert, `systemctl --user restart steamd` | Le Steam du bureau n'est pas interrompu, `steamd` reste en `standby` |
+| 6c | Partie en Remote Play depuis le Deck, puis connexion au bureau | La partie continue (`busy`), une notification s'affiche sur le bureau ; à la fin de la partie, le Steam du bureau s'ouvre tout seul |
+| 6d | Jeu lancé au bureau, session verrouillée | La partie continue, `steamd` reste en `standby` |
+| 6e | Partie Remote Play en cours | `systemd-inhibit --list` montre le blocage posé par steamd |
+| 6f | `IDLE_ACTION=suspend` ou `poweroff`, PC réveillé par WoL sans connexion | Le PC se met en veille ou s'éteint après `IDLE_TIMEOUT` sans partie |
 | 7 | PC éteint, raccourci de réveil sur le Deck | Le PC démarre et Remote Play est disponible en moins de 60 s |
 | 8 | `steamd-doctor` | Rapport lisible, chaque point marqué OK ou KO avec une piste de correction |
 
@@ -255,16 +280,21 @@ Le mode jeu n'affiche rien : chaque envoi est journalisé dans `~/.local/state/s
 - **Écran noir avec le son qui passe** : problème déjà signalé avec le backend headless de gamescope. Essayer les autres modes de capture Steam, vérifier la version de gamescope, et lancer gamescope avec ses logs détaillés.
 - **Manettes inertes** : droits sur `/dev/uinput`, à vérifier avec `steamd-doctor`.
 - **`steamd` reste en `standby` après la déconnexion** : un Steam du bureau a survécu à la fermeture de session. `steamd` ne le tue pas volontairement : le fermer avec `steam -shutdown`.
+- **Rien ne s'affiche sur le bureau après une partie Remote Play** : vérifier `journalctl --user -u steamd` (« lancement du Steam du bureau »). Si l'environnement graphique n'a pas été importé, lancer Steam à la main et le signaler.
+- **La veille automatique ne se déclenche pas** : une session SSH ouverte compte comme une session. Vérifier aussi la règle polkit avec `steamd-doctor`.
 - **Pas d'audio** : PipeWire utilisateur pas démarré sans session, à vérifier avec `systemctl --user status pipewire`.
 - **Steam démarre mais l'hôte n'apparaît pas sur le Deck** : pare-feu (UDP 27031-27036, TCP 27036-27037) ou Remote Play désactivé.
 
 ## État d'avancement
 
-Tout le contenu du périmètre v1 est écrit. Les scripts passent `shellcheck`. Hors machine cible, avec de faux gamescope, Steam et logind, ont été testés : la génération de commande, l'envoi du magic packet et la supervision (lancement, relance après plantage, veille à la connexion, Steam du bureau non interrompu, reprise après sa fermeture, arrêt sans processus restant). **Le plan de test ci-dessus reste à dérouler sur le PC hôte et le Deck.** Points à confirmer en priorité :
+Tout le contenu du périmètre v1 est écrit. Les scripts passent `shellcheck`. Hors machine cible, avec de faux gamescope, Steam et logind, ont été testés : la génération de commande, l'envoi du magic packet et la supervision (lancement, relance après plantage, veille à la connexion, Steam du bureau non interrompu, reprise après sa fermeture, partie Remote Play préservée à la connexion avec passage de main à la fin, blocage de la veille pendant une partie, veille automatique après inactivité, arrêt sans processus restant). **Le plan de test ci-dessus reste à dérouler sur le PC hôte et le Deck.** Points à confirmer en priorité :
 
 - test 2 (uinput et PipeWire sans session) ;
 - le bon déclenchement de `steamd-session-hook` par Plasma 6 (`graphical-session-pre.target` puis `graphical-session.target`) ;
-- l'arrêt propre via `steam -shutdown` sans affichage.
+- l'arrêt propre via `steam -shutdown` sans affichage ;
+- la détection d'une partie via `reaper SteamLaunch AppId=` sur la version de Steam installée ;
+- le lancement du Steam du bureau depuis le service (environnement graphique importé par Plasma) et l'affichage de la notification ;
+- pour `IDLE_ACTION=suspend` : le réveil du PC depuis la veille par le Wake-on-LAN.
 
 ## Critères de fin pour la v1
 

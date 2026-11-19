@@ -244,15 +244,17 @@ section "Instance unique et session"
 STATE_RT="${XDG_RUNTIME_DIR:-/run/user/$UID}/steamd/state"
 sd_state=$(head -1 "$STATE_RT" 2>/dev/null || true)
 sd_why=$(sed -n 2p "$STATE_RT" 2>/dev/null || true)
-pol=$(
-	DESKTOP_SESSION_POLICY=yield
+# Réglages utiles au diagnostic, lus dans un sous-shell.
+read -r pol idle_action idle_timeout notify < <(
+	DESKTOP_SESSION_POLICY=yield IDLE_ACTION=none IDLE_TIMEOUT=1800 NOTIFY=true
 	# shellcheck source=/dev/null
 	[[ -r $CONF ]] && source "$CONF" >/dev/null 2>&1
-	echo "$DESKTOP_SESSION_POLICY"
+	echo "$DESKTOP_SESSION_POLICY $IDLE_ACTION $IDLE_TIMEOUT $NOTIFY"
 )
 info "politique de session : $pol"
 case $sd_state in
-running) ok "steamd : Steam headless actif" ;;
+running) ok "steamd actif : $sd_why" ;;
+busy) ok "steamd : $sd_why" ;;
 standby) ok "steamd en veille : $sd_why" ;;
 backoff) warn "steamd : $sd_why" "voir les logs ci-dessous" ;;
 stopped) info "steamd : service arrêté" ;;
@@ -283,6 +285,36 @@ if [[ $en == enabled ]]; then
 	ok "steamd-session-hook.service activé"
 else
 	warn "steamd-session-hook.service : $en (à la connexion au bureau, steamd met jusqu'à POLL_INTERVAL à réagir, et le Steam du bureau peut s'ouvrir dans le Steam headless)" "systemctl --user enable steamd-session-hook.service"
+fi
+
+if [[ $notify == true ]]; then
+	if have notify-send; then
+		ok "notify-send présent (notification si une session s'ouvre pendant une partie Remote Play)"
+	else
+		warn "notify-send absent : pas de notification sur le bureau" "sudo pacman -S libnotify"
+	fi
+fi
+
+# ---------------------------------------------------------------------------
+section "Énergie"
+inh=$(systemd-inhibit --list --no-legend 2>/dev/null | grep -i steamd || true)
+if [[ -n $inh ]]; then
+	info "mise en veille bloquée par steamd (partie Remote Play en cours)"
+else
+	info "aucun blocage de veille posé par steamd"
+fi
+if [[ $idle_action == none ]]; then
+	info "IDLE_ACTION=none : sans session, le PC reste allumé indéfiniment après un réveil"
+else
+	info "IDLE_ACTION=$idle_action après ${idle_timeout}s sans session ni partie"
+	if [[ -f /etc/polkit-1/rules.d/60-steamd.rules ]]; then
+		ok "règle polkit installée (/etc/polkit-1/rules.d/60-steamd.rules)"
+	else
+		ko "règle polkit absente : $idle_action échouera sans session" "relancer ./install.sh"
+	fi
+	if [[ $idle_action == suspend ]]; then
+		warn "vérifier que le Wake-on-LAN réveille le PC depuis la veille, pas seulement depuis l'arrêt" "tester : systemctl suspend, puis le raccourci « Réveil PC » sur le Deck"
+	fi
 fi
 
 # ---------------------------------------------------------------------------

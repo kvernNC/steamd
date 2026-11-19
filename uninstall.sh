@@ -21,6 +21,7 @@ STATE_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/steamd"
 STATE_FILE="$STATE_DIR/install.state"
 UDEV_RULE=/etc/udev/rules.d/60-steamd-uinput.rules
 MODULES_LOAD=/etc/modules-load.d/steamd-uinput.conf
+POLKIT_RULE=/etc/polkit-1/rules.d/60-steamd.rules
 
 REMOVE_GROUP=false
 DISABLE_LINGER=false
@@ -69,6 +70,7 @@ for u in steamd.service steamd-session-hook.service; do
 	fi
 done
 systemctl --user stop steamd.service 2>/dev/null || true
+# Steam lancé sur le bureau par steamd (unité transitoire) : laissé tel quel.
 systemctl --user reset-failed steamd.service steamd-session-hook.service 2>/dev/null || true
 
 step "Fichiers utilisateur"
@@ -88,7 +90,7 @@ elif [[ -d $CONF_DIR ]]; then
 fi
 
 need_sudo=false
-[[ -e $UDEV_RULE || -e $MODULES_LOAD ]] && need_sudo=true
+[[ -e $UDEV_RULE || -e $MODULES_LOAD || -e $POLKIT_RULE ]] && need_sudo=true
 [[ $REMOVE_GROUP == true || $DISABLE_LINGER == true ]] && need_sudo=true
 
 if [[ $need_sudo == true ]]; then
@@ -99,6 +101,10 @@ if [[ $need_sudo == true ]]; then
 		sudo udevadm control --reload
 		sudo udevadm trigger --name-match=uinput 2>/dev/null || true
 		note "supprimé : $UDEV_RULE"
+	fi
+	if [[ -e $POLKIT_RULE ]]; then
+		sudo rm -f "$POLKIT_RULE"
+		note "supprimé : $POLKIT_RULE"
 	fi
 	if [[ -e $MODULES_LOAD ]]; then
 		sudo rm -f "$MODULES_LOAD"

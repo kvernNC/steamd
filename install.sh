@@ -24,6 +24,7 @@ STATE_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/steamd"
 STATE_FILE="$STATE_DIR/install.state"
 UDEV_RULE=/etc/udev/rules.d/60-steamd-uinput.rules
 MODULES_LOAD=/etc/modules-load.d/steamd-uinput.conf
+POLKIT_RULE=/etc/polkit-1/rules.d/60-steamd.rules
 
 UINPUT_GROUP=input
 ENABLE=true
@@ -70,6 +71,9 @@ systemctl --user show-environment >/dev/null 2>&1 ||
 for b in gamescope steam; do
 	command -v "$b" >/dev/null || warn "$b introuvable : sudo pacman -S $b"
 done
+command -v notify-send >/dev/null ||
+	warn "notify-send introuvable : pas de notification sur le bureau pendant une partie Remote Play (sudo pacman -S libnotify)"
+
 
 # --- État : ce que install.sh a lui-même changé (pour uninstall.sh) -----------
 ADDED_TO_GROUP=false
@@ -117,7 +121,7 @@ else
 fi
 
 # --- Partie système (sudo) ---------------------------------------------------
-step "Droits administrateur (udev, uinput, groupe, linger)"
+step "Droits administrateur (udev, uinput, polkit, groupe, linger)"
 sudo -v || die "sudo est nécessaire pour cette étape"
 
 getent group "$UINPUT_GROUP" >/dev/null || die "le groupe $UINPUT_GROUP n'existe pas (sudo groupadd -r $UINPUT_GROUP)"
@@ -138,6 +142,17 @@ else
 	echo uinput | sudo tee "$MODULES_LOAD" >/dev/null
 	note "module uinput chargé au boot : $MODULES_LOAD"
 fi
+
+tmp_polkit=$(mktemp)
+trap 'rm -f "$tmp_rule" "$tmp_polkit"' EXIT
+sed "s/@USER@/$USER/g" "$REPO_DIR/polkit/60-steamd.rules" >"$tmp_polkit"
+if sudo cmp -s "$tmp_polkit" "$POLKIT_RULE" 2>/dev/null; then
+	note "règle polkit déjà à jour : $POLKIT_RULE"
+else
+	sudo install -m 0644 "$tmp_polkit" "$POLKIT_RULE"
+	note "règle polkit installée : $POLKIT_RULE (veille et extinction sans session, pour IDLE_ACTION)"
+fi
+
 sudo modprobe uinput
 sudo udevadm control --reload
 sudo udevadm trigger --name-match=uinput 2>/dev/null || sudo udevadm trigger --subsystem-match=misc

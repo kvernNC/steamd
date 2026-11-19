@@ -1,0 +1,17 @@
+// steamd : autorise l'utilisateur à mettre en veille ou éteindre le PC sans
+// session ouverte (IDLE_ACTION=suspend ou poweroff). Sans cette règle, logind
+// demande un mot de passe administrateur à un utilisateur sans session active.
+// Les variantes « multiple-sessions » sont nécessaires parce que le greeter
+// SDDM compte comme une autre session.
+// @USER@ est remplacé par install.sh.
+polkit.addRule(function (action, subject) {
+    var actions = [
+        "org.freedesktop.login1.suspend",
+        "org.freedesktop.login1.suspend-multiple-sessions",
+        "org.freedesktop.login1.power-off",
+        "org.freedesktop.login1.power-off-multiple-sessions"
+    ];
+    if (subject.user == "@USER@" && actions.indexOf(action.id) >= 0) {
+        return polkit.Result.YES;
+    }
+});

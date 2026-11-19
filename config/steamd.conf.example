@@ -27,15 +27,42 @@ GAMESCOPE_EXTRA_ARGS=""
 STEAM_EXTRA_ARGS=""
 
 # --- Cohabitation avec la session de bureau -----------------------------------
-# steamd est un service permanent. Il ne tue jamais un Steam qu'il n'a pas
-# lancé lui-même (celui du bureau par exemple) : il attend qu'il se ferme.
-#   yield     (défaut) dès qu'une session graphique locale s'ouvre, Steam
-#             headless est fermé pour laisser la place au Steam du bureau ;
+# Règle de base : une partie en cours n'est jamais interrompue. steamd ne tue
+# jamais un Steam qu'il n'a pas lancé lui-même (celui du bureau par exemple) :
+# il attend qu'il se ferme. Une session verrouillée reste une session ouverte.
+#   yield     (défaut) quand une session graphique locale s'ouvre :
+#             - pas de partie Remote Play en cours : Steam headless est fermé
+#               tout de suite pour laisser la place au Steam du bureau ;
+#             - partie Remote Play en cours : elle continue, le bureau reçoit
+#               une notification, et à la fin de la partie Steam headless est
+#               fermé puis le Steam du bureau lancé.
 #             steamd reste en veille et reprend après la déconnexion.
 #   takeover  Steam headless reste actif même pendant une session de bureau
 #             (le Steam du bureau s'ouvre alors dans l'instance headless,
 #             invisible à l'écran).
 DESKTOP_SESSION_POLICY=yield
+# Après la fin d'une partie, délai avant de rendre la main au bureau : laisse
+# le temps d'enchaîner (relance du jeu, launcher, partie suivante).
+HANDOVER_DELAY=15
+# Lancer automatiquement le Steam du bureau après le passage de main.
+# false : simple notification « Steam est disponible ».
+RESUME_DESKTOP_STEAM=true
+# Options du Steam lancé sur le bureau (ex. "-silent" pour le garder réduit).
+DESKTOP_STEAM_ARGS=""
+# Notifications sur le bureau (notify-send, paquet libnotify).
+NOTIFY=true
+
+# --- Énergie --------------------------------------------------------------------
+# Bloquer la mise en veille du PC pendant une partie Remote Play.
+INHIBIT_SLEEP_DURING_GAME=true
+# Que faire quand le PC tourne sans aucune session (ni bureau, ni SSH) et sans
+# partie depuis IDLE_TIMEOUT secondes :
+#   none      ne rien faire (défaut)
+#   suspend   mise en veille : à n'utiliser que si le Wake-on-LAN réveille le
+#             PC depuis la veille
+#   poweroff  extinction : le Wake-on-LAN depuis l'arrêt suffit
+IDLE_ACTION=none
+IDLE_TIMEOUT=1800
 
 # --- Délais (secondes) --------------------------------------------------------
 # Intervalle entre deux vérifications (session, Steam). La connexion au bureau

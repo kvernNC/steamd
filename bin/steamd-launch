@@ -6,14 +6,22 @@
 #   steamd-launch --print   affiche la commande gamescope, sans l'exécuter
 #   steamd-launch --status  affiche l'état courant (running, standby, ...)
 #
-# Le service ne s'arrête jamais de lui-même. À chaque tour de boucle, il décide :
+# Le service ne s'arrête jamais de lui-même. Règle de base : une partie en
+# cours n'est jamais interrompue, quel que soit le Steam qui la fait tourner.
+# À chaque tour de boucle :
 #   - aucune session graphique locale        -> Steam headless lancé (running)
 #   - session graphique locale ouverte       -> selon DESKTOP_SESSION_POLICY :
-#       yield    (défaut) : Steam headless arrêté, celui du bureau n'est jamais
-#                           touché ; steamd attend en veille (standby)
+#       yield    (défaut) : si une partie Remote Play est en cours, elle continue
+#                           (busy) et le bureau est prévenu ; à la fin de la
+#                           partie, Steam headless est fermé et le Steam du
+#                           bureau lancé. Sinon, Steam headless est fermé tout
+#                           de suite (standby).
 #       takeover          : Steam headless gardé, même avec une session ouverte
 #   - un autre Steam tourne (bureau, lancé à la main...) -> jamais tué ; steamd
 #     attend qu'il se ferme (standby)
+#   - sans aucune session et sans partie depuis IDLE_TIMEOUT -> IDLE_ACTION
+#     (none, suspend ou poweroff)
+# Pendant une partie Remote Play, la mise en veille du PC est bloquée.
 # SIGUSR1 force une réévaluation immédiate (envoyé par steamd-session-hook).
 #
 # Code de sortie 2 : configuration invalide (systemd ne relance pas).
@@ -46,6 +54,13 @@ STEAM_UI_ARG="-tenfoot"
 GAMESCOPE_EXTRA_ARGS=""
 STEAM_EXTRA_ARGS=""
 DESKTOP_SESSION_POLICY=yield
+HANDOVER_DELAY=15
+RESUME_DESKTOP_STEAM=true
+DESKTOP_STEAM_ARGS=""
+NOTIFY=true
+INHIBIT_SLEEP_DURING_GAME=true
+IDLE_ACTION=none
+IDLE_TIMEOUT=1800
 POLL_INTERVAL=5
 RESTART_DELAY=10
 STOP_TIMEOUT=30
@@ -65,7 +80,7 @@ is_uint() { [[ $1 =~ ^[0-9]+$ ]]; }
 
 validate_conf() {
 	local v
-	for v in WIDTH HEIGHT REFRESH POLL_INTERVAL RESTART_DELAY STOP_TIMEOUT; do
+	for v in WIDTH HEIGHT REFRESH POLL_INTERVAL RESTART_DELAY STOP_TIMEOUT HANDOVER_DELAY IDLE_TIMEOUT; do
 		is_uint "${!v}" || die $EXIT_CONFIG "$v doit être un entier (valeur : '${!v}')"
 	done
 	((POLL_INTERVAL >= 1)) || die $EXIT_CONFIG "POLL_INTERVAL doit être >= 1"
@@ -80,6 +95,11 @@ validate_conf() {
 	yield | takeover) ;;
 	*) die $EXIT_CONFIG "DESKTOP_SESSION_POLICY doit valoir yield ou takeover (valeur : '$DESKTOP_SESSION_POLICY')" ;;
 	esac
+	case $IDLE_ACTION in
+	none | suspend | poweroff) ;;
+	*) die $EXIT_CONFIG "IDLE_ACTION doit valoir none, suspend ou poweroff (valeur : '$IDLE_ACTION')" ;;
+	esac
+	((IDLE_TIMEOUT >= 60)) || die $EXIT_CONFIG "IDLE_TIMEOUT doit être >= 60"
 	command -v "$GAMESCOPE_BIN" >/dev/null || die $EXIT_CONFIG "gamescope introuvable ($GAMESCOPE_BIN)"
 	command -v "$STEAM_BIN" >/dev/null || die $EXIT_CONFIG "steam introuvable ($STEAM_BIN)"
 }
@@ -125,6 +145,111 @@ local_graphical_session() {
 		fi
 	done
 	systemctl --user is-active --quiet graphical-session.target 2>/dev/null
+}
+
+# Nombre de sessions d'utilisateurs ouvertes (bureau, SSH, console), tous
+# utilisateurs confondus. Les sessions techniques (greeter SDDM, gestionnaire
+# systemd du linger, tâches de fond) ne comptent pas.
+user_sessions() {
+	local s class n=0
+	for s in $(loginctl list-sessions --no-legend 2>/dev/null | awk '{print $1}'); do
+		class=$(loginctl show-session "$s" -p Class --value 2>/dev/null) || continue
+		[[ $class == user* ]] && n=$((n + 1))
+	done
+	echo "$n"
+}
+
+# --- Partie en cours -----------------------------------------------------------
+
+# Processus de Steam headless : cgroup du service sous systemd, sinon groupe
+# de processus du fils.
+headless_pids() {
+	local cg
+	cg=$(sed -n 's/^0:://p' /proc/self/cgroup 2>/dev/null)
+	if [[ $cg == */steamd.service && -r /sys/fs/cgroup$cg/cgroup.procs ]]; then
+		cat "/sys/fs/cgroup$cg/cgroup.procs"
+	elif ((CHILD > 0)); then
+		pgrep -g "$CHILD" || true
+	fi
+}
+
+# AppId du jeu lancé par Steam headless, ou rien. Steam lance chaque jeu via
+# « reaper SteamLaunch AppId=NNN -- ... ».
+headless_game() {
+	local p cmd
+	while read -r p; do
+		cmd=$(tr '\0' ' ' <"/proc/$p/cmdline" 2>/dev/null) || continue
+		if [[ $cmd == *SteamLaunch*AppId=* ]]; then
+			cmd=${cmd#*AppId=}
+			echo "${cmd%% *}"
+			return 0
+		fi
+	done < <(headless_pids)
+	return 0
+}
+
+# Nom d'un jeu d'après les manifestes des bibliothèques Steam.
+game_name() {
+	local id=$1 root lib f name
+	for root in "$HOME/.steam/steam" "$HOME/.local/share/Steam"; do
+		[[ -d $root/steamapps ]] || continue
+		while read -r lib; do
+			f="$lib/steamapps/appmanifest_$id.acf"
+			[[ -r $f ]] || continue
+			name=$(sed -n 's/^[[:space:]]*"name"[[:space:]]*"\(.*\)"[[:space:]]*$/\1/p' "$f" | head -1)
+			[[ -n $name ]] && {
+				echo "$name"
+				return 0
+			}
+		done < <(
+			echo "$root"
+			sed -n 's/^[[:space:]]*"path"[[:space:]]*"\(.*\)"[[:space:]]*$/\1/p' "$root/steamapps/libraryfolders.vdf" 2>/dev/null
+		)
+	done
+	echo "jeu $id"
+}
+
+# --- Bureau : notification et lancement du Steam du bureau ---------------------
+
+notify() {
+	[[ $NOTIFY == true ]] || return 0
+	command -v notify-send >/dev/null || return 0
+	DBUS_SESSION_BUS_ADDRESS=${DBUS_SESSION_BUS_ADDRESS:-unix:path=${XDG_RUNTIME_DIR:-/run/user/$UID}/bus} \
+		notify-send -a steamd -i steam "$1" "$2" >/dev/null 2>&1 || true
+}
+
+# Lance Steam dans la session graphique, dans une unité transitoire qui hérite
+# de l'environnement de la session (WAYLAND_DISPLAY, DISPLAY importés par Plasma).
+resume_desktop_steam() {
+	if [[ $RESUME_DESKTOP_STEAM != true ]]; then
+		notify "Steam est disponible" "La partie Remote Play est terminée, vous pouvez lancer Steam."
+		return 0
+	fi
+	steam_running && return 0
+	local -a args
+	read -ra args <<<"$DESKTOP_STEAM_ARGS"
+	log "lancement du Steam du bureau"
+	systemd-run --user --quiet --collect --slice=app.slice -p ExitType=cgroup \
+		--unit="steamd-desktop-steam-$(date +%s)" -- "$STEAM_BIN" "${args[@]}" ||
+		log "échec du lancement du Steam du bureau"
+}
+
+# --- Blocage de la mise en veille pendant une partie ---------------------------
+INHIBIT_PID=0
+inhibit_on() {
+	[[ $INHIBIT_SLEEP_DURING_GAME == true ]] || return 0
+	if ((INHIBIT_PID > 0)) && kill -0 "$INHIBIT_PID" 2>/dev/null; then return 0; fi
+	command -v systemd-inhibit >/dev/null || return 0
+	setsid systemd-inhibit --what=sleep:idle --who=steamd --why="$1" --mode=block sleep infinity &
+	INHIBIT_PID=$!
+	log "mise en veille bloquée : $1"
+}
+inhibit_off() {
+	((INHIBIT_PID > 0)) || return 0
+	kill -- "-$INHIBIT_PID" 2>/dev/null || true
+	wait "$INHIBIT_PID" 2>/dev/null || true
+	INHIBIT_PID=0
+	log "mise en veille de nouveau autorisée"
 }
 
 # --- Processus fils (gamescope + Steam) ---------------------------------------
@@ -199,6 +324,8 @@ sweep_cgroup() {
 	[[ -r $procs ]] || return 0
 	while read -r p; do
 		[[ $p == "$$" || $p == "$BASHPID" ]] && continue
+		# Ne pas tuer l'inhibiteur de veille, géré à part.
+		((INHIBIT_PID > 0)) && [[ $(ps -o pgid= -p "$p" 2>/dev/null | tr -d ' ') == "$INHIBIT_PID" ]] && continue
 		kill -KILL "$p" 2>/dev/null && n=$((n + 1))
 	done <"$procs"
 	((n == 0)) || log "$n processus restants terminés (SIGKILL)"
@@ -231,14 +358,20 @@ nap() {
 }
 
 supervise() {
-	local fails=0 delay=0 why
+	local fails=0 delay=0 game="" name="" last_id="" last_game=0 desktop_waiting=0
+	local idle=0 last_tick=$SECONDS dt
 	trap on_term TERM INT
 	trap on_usr1 USR1
-	trap 'set_state stopped "service arrêté"' EXIT
-	log "configuration : $CONF ; politique de session : $DESKTOP_SESSION_POLICY"
+	trap 'inhibit_off; set_state stopped "service arrêté"' EXIT
+	log "configuration : $CONF ; politique de session : $DESKTOP_SESSION_POLICY ; inactivité : $IDLE_ACTION"
 
 	while ((!STOPPING)); do
 		KICK=0
+		# Temps écoulé depuis le tour précédent. Un grand saut signifie une
+		# sortie de veille : on remet le compteur d'inactivité à zéro.
+		dt=$((SECONDS - last_tick))
+		last_tick=$SECONDS
+		((dt > POLL_INTERVAL * 3 + 10)) && idle=0 && dt=0
 
 		# Fin inattendue du fils : on relance après un délai croissant.
 		if ((CHILD > 0)) && ! child_alive; then
@@ -248,6 +381,7 @@ supervise() {
 			kill -KILL -- "-$CHILD" 2>/dev/null || true
 			sweep_cgroup
 			CHILD=0
+			inhibit_off
 			if ((SECONDS - CHILD_STARTED < 60)); then fails=$((fails + 1)); else fails=1; fi
 			delay=$((RESTART_DELAY * fails))
 			((delay > 300)) && delay=300
@@ -257,20 +391,73 @@ supervise() {
 			continue
 		fi
 
-		if [[ $DESKTOP_SESSION_POLICY == yield ]] && local_graphical_session; then
-			stop_child "session graphique locale ouverte"
-			set_state standby "session graphique locale ouverte : le Steam du bureau a la priorité"
-		elif child_alive; then
-			set_state running "Steam headless actif"
-		elif steam_running; then
-			set_state standby "un autre Steam tourne déjà pour $USER : il n'est pas interrompu"
+		# Partie Remote Play en cours dans Steam headless ?
+		game=""
+		child_alive && game=$(headless_game)
+		if [[ -n $game ]]; then
+			[[ $game != "$last_id" ]] && name=$(game_name "$game") && last_id=$game
+			last_game=$SECONDS
+			idle=0
+			inhibit_on "Partie Remote Play : $name"
 		else
-			start_child
-			set_state running "Steam headless actif"
+			inhibit_off
+		fi
+
+		if [[ $DESKTOP_SESSION_POLICY == yield ]] && local_graphical_session; then
+			idle=0
+			if child_alive && [[ -n $game ]]; then
+				# Session ouverte pendant une partie : on ne coupe rien.
+				if ((!desktop_waiting)); then
+					desktop_waiting=1
+					log "session de bureau ouverte pendant la partie « $name » : elle continue"
+					notify "Steam est utilisé en Remote Play" "Partie en cours : $name. Steam s'ouvrira ici à la fin de la partie."
+				fi
+				set_state busy "session de bureau ouverte, partie Remote Play en cours ($name) : elle n'est pas interrompue"
+			elif child_alive && ((desktop_waiting && SECONDS - last_game < HANDOVER_DELAY)); then
+				# Laisse le temps d'enchaîner (relance du jeu, launcher...).
+				set_state busy "partie terminée, passage au bureau dans $((HANDOVER_DELAY - (SECONDS - last_game)))s sauf nouvelle partie"
+			else
+				stop_child "session graphique locale ouverte"
+				set_state standby "session graphique locale ouverte : le Steam du bureau a la priorité"
+				if ((desktop_waiting)); then
+					desktop_waiting=0
+					resume_desktop_steam
+				fi
+			fi
+		else
+			desktop_waiting=0
+			if child_alive; then
+				if [[ -n $game ]]; then
+					set_state running "partie Remote Play en cours : $name"
+				else
+					set_state running "Steam headless actif"
+				fi
+			elif steam_running; then
+				set_state standby "un autre Steam tourne déjà pour $USER : il n'est pas interrompu"
+			else
+				start_child
+				set_state running "Steam headless actif"
+			fi
+
+			# Inactivité : Steam headless sans partie et personne de connecté.
+			if [[ $IDLE_ACTION != none && $STATE == running && -z $game ]] && (($(user_sessions) == 0)); then
+				idle=$((idle + dt))
+				if ((idle >= IDLE_TIMEOUT)); then
+					log "aucune partie ni session depuis ${IDLE_TIMEOUT}s : $IDLE_ACTION"
+					idle=0
+					case $IDLE_ACTION in
+					suspend) systemctl suspend || log "échec de la mise en veille (règle polkit installée ?)" ;;
+					poweroff) systemctl poweroff || log "échec de l'extinction (règle polkit installée ?)" ;;
+					esac
+				fi
+			else
+				idle=0
+			fi
 		fi
 		nap "$POLL_INTERVAL"
 	done
 
+	inhibit_off
 	stop_child "arrêt du service"
 }
 

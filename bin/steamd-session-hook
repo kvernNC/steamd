@@ -9,7 +9,9 @@
 #
 # Avec DESKTOP_SESSION_POLICY=yield, "login" attend que steamd ait rendu la
 # main (Steam headless arrêté) : le Steam du bureau démarre alors normalement.
-# steamd ne s'arrête jamais, il passe en veille puis reprend tout seul.
+# Si une partie Remote Play est en cours, steamd la laisse continuer (état
+# busy) : le bureau démarre sans attendre, et steamd lancera le Steam du
+# bureau à la fin de la partie.
 set -euo pipefail
 
 log() { printf 'steamd-session-hook: %s\n' "$*" >&2; }
@@ -39,7 +41,13 @@ login)
 	limit=$((STOP_TIMEOUT + 20))
 	for ((i = 0; i < limit * 2; i++)); do
 		state=$(head -1 "$STATE_FILE" 2>/dev/null || true)
-		[[ $state == standby || $state == stopped ]] && exit 0
+		case $state in
+		standby | stopped) exit 0 ;;
+		busy)
+			log "partie Remote Play en cours : elle continue, Steam s'ouvrira à la fin"
+			exit 0
+			;;
+		esac
 		sleep 0.5
 	done
 	log "steamd n'est pas passé en veille après ${limit}s (état : ${state:-inconnu})"
