@@ -1,11 +1,14 @@
 #!/usr/bin/env bash
 # install.sh : installe steamd pour l'utilisateur courant. Idempotent.
 #
-#   ./install.sh [--group NOM] [--no-enable] [--start]
+#   ./install.sh [--group NOM] [--no-enable] [--no-start]
 #
 #   --group NOM   groupe qui reçoit l'accès à /dev/uinput (défaut : input)
 #   --no-enable   installe sans activer steamd au démarrage
-#   --start       démarre steamd à la fin (sinon : au prochain boot)
+#   --no-start    ne démarre pas (ou ne relance pas) steamd tout de suite
+#
+# steamd est un service permanent : le démarrer pendant une session de bureau
+# est sans risque, il reste en veille et ne touche pas au Steam du bureau.
 #
 # À lancer avec l'utilisateur qui joue, pas en root : sudo est demandé
 # seulement pour la règle udev, le module uinput, le groupe et le linger.
@@ -24,9 +27,9 @@ MODULES_LOAD=/etc/modules-load.d/steamd-uinput.conf
 
 UINPUT_GROUP=input
 ENABLE=true
-START=false
+START=true
 
-usage() { sed -n '2,12p' "$0"; }
+usage() { sed -n '2,15p' "$0"; }
 
 while (($#)); do
 	case $1 in
@@ -36,7 +39,7 @@ while (($#)); do
 		;;
 	--group=*) UINPUT_GROUP=${1#*=} ;;
 	--no-enable) ENABLE=false ;;
-	--start) START=true ;;
+	--no-start) START=false ;;
 	-h | --help)
 		usage
 		exit 0
@@ -177,16 +180,11 @@ else
 	note "--no-enable : steamd n'est pas activé au démarrage"
 fi
 
-if [[ $START == true ]]; then
+if [[ $START == true && $ENABLE == true ]]; then
 	step "Démarrage de steamd"
-	if pgrep -u "$UID" -x steam >/dev/null; then
-		warn "un Steam tourne déjà : le fermer avant (steam -shutdown), steamd attendra ${STEAM_WAIT_TIMEOUT:-60}s"
-	fi
 	systemctl --user restart --no-block steamd.service
-	note "suivre les logs : journalctl --user -u steamd -f"
-elif systemctl --user is-active --quiet steamd.service; then
-	systemctl --user try-restart --no-block steamd.service
-	note "steamd était actif : relancé avec la nouvelle version"
+	note "steamd démarré (en veille si une session de bureau est ouverte)"
+	note "état : steamd-launch --status ; logs : journalctl --user -u steamd -f"
 fi
 
 step "Terminé"

@@ -27,11 +27,11 @@ Permettre ce parcours, sans aucune intervention physique sur le PC hôte :
 
 ### Inclus
 
-- Service systemd **utilisateur** `steamd.service` qui lance `gamescope --backend headless` avec Steam en Big Picture.
+- Service systemd **utilisateur** `steamd.service`, **permanent** (*always on*), qui supervise `gamescope --backend headless` avec Steam en Big Picture.
 - Activation du *linger* pour que le service démarre au boot sans session.
 - Dépendances PipeWire et WirePlumber en services utilisateur (vidéo et audio sans session graphique).
 - Règle udev donnant l'accès à `/dev/uinput` sans session active (manettes virtuelles du Remote Play), par exemple via le groupe `input`.
-- Gestion du conflit avec une session de bureau : un seul Steam à la fois. Quand l'utilisateur se connecte localement, `steamd` s'arrête, et il peut redémarrer quand l'utilisateur se déconnecte (optionnel, configurable).
+- Gestion du conflit avec une session de bureau : un seul Steam à la fois. Par défaut, **le Steam de la session graphique n'est jamais coupé** : quand quelqu'un utilise le PC, `steamd` ferme son Steam headless et passe en veille, puis reprend après la déconnexion, une fois le Steam du bureau fermé. Ce comportement est configurable.
 - Fichier de configuration simple : résolution, fréquence et options gamescope/Steam.
 - Script d'installation et de désinstallation idempotent.
 - Côté Deck : script de réveil (`wake-host.sh`) à ajouter comme raccourci non-Steam en mode jeu.
@@ -106,7 +106,7 @@ Ce que fait `install.sh` (relançable sans risque) :
 
 Ce que l'installation a elle-même changé (groupe, linger) est noté dans `~/.local/share/steamd/install.state`. C'est ce qui permet à `uninstall.sh` de ne retirer que ce qui a été ajouté.
 
-Options : `--no-enable` (installer sans activer au boot) et `--start` (démarrer tout de suite).
+Le service est activé et démarré tout de suite. C'est sans risque pendant une session de bureau : il reste en veille et ne touche pas au Steam ouvert. Options : `--no-enable` (ne pas activer au boot) et `--no-start` (ne pas démarrer maintenant).
 
 Ensuite : faire les [prérequis manuels](#prérequis-manuels-une-seule-fois), puis **redémarrer**. Le gestionnaire systemd utilisateur ne prend le nouveau groupe qu'à son redémarrage.
 
@@ -122,9 +122,9 @@ STEAM_CAPTURE=pipewire-dmabuf   # pipewire-dmabuf | pipewire | none
 STEAM_UI_ARG="-tenfoot"         # ou -gamepadui
 GAMESCOPE_EXTRA_ARGS=""
 STEAM_EXTRA_ARGS=""
-STOP_ON_LOCAL_LOGIN=true
-RESTART_ON_LOCAL_LOGOUT=true
-STEAM_WAIT_TIMEOUT=60           # attente max d'un autre Steam ou d'une session au démarrage
+DESKTOP_SESSION_POLICY=yield    # yield | takeover
+POLL_INTERVAL=5                 # intervalle entre deux vérifications
+RESTART_DELAY=10                # délai de relance après une fin inattendue
 STOP_TIMEOUT=30                 # temps laissé à Steam pour se fermer proprement
 ```
 
@@ -144,10 +144,26 @@ systemctl --user restart steamd
 
 ## Fonctionnement
 
-- **`steamd.service`** (`Restart=on-failure`, 10 s) appelle `steamd-launch`. Le wrapper valide la conf, attend jusqu'à `STEAM_WAIT_TIMEOUT` qu'aucun autre Steam ne tourne et qu'aucune session graphique locale ne soit ouverte, retire `DISPLAY` et `WAYLAND_DISPLAY` hérités d'une ancienne session Plasma, puis lance gamescope avec `exec`.
-- **Arrêt** : `ExecStop` envoie `steam -shutdown` et laisse `STOP_TIMEOUT` secondes à Steam pour se fermer proprement. Au-delà, systemd termine les processus restants.
-- **Codes de sortie** : `2` pour une configuration invalide et `3` pour un conflit (autre Steam ou session de bureau). Dans les deux cas, systemd ne relance pas le service (`RestartPreventExitStatus`).
-- **`steamd-session-hook.service`** est rattaché à `graphical-session.target`, que Plasma démarre à la connexion. Il s'exécute *avant* le bureau (`Type=oneshot`, donc bloquant) et arrête `steamd` : le Steam du bureau démarre ensuite normalement. À la déconnexion, son `ExecStop` relance `steamd` si `RESTART_ON_LOCAL_LOGOUT=true` et que le service est activé. Une connexion SSH n'ouvre pas de session graphique et n'a aucun effet.
+`steamd.service` est un service **permanent** : activé au boot, il ne s'arrête jamais de lui-même (`Restart=always`). Il exécute `steamd-launch`, un superviseur qui réévalue la situation toutes les `POLL_INTERVAL` secondes :
+
+| Situation | État | Action |
+|---|---|---|
+| Aucune session graphique locale, aucun autre Steam | `running` | Steam headless lancé dans gamescope (et relancé s'il plante) |
+| Session graphique locale ouverte, politique `yield` (défaut) | `standby` | Steam headless fermé proprement ; le Steam du bureau a la priorité |
+| Un Steam lancé hors de steamd tourne encore (bureau, terminal…) | `standby` | **jamais tué** : steamd attend qu'il se ferme, puis reprend la main |
+| Fin inattendue de gamescope ou de Steam | `backoff` | relance après `RESTART_DELAY` × nombre d'échecs rapprochés (300 s max) |
+
+- **Politique `takeover`** : Steam headless reste actif même pendant une session de bureau. Le Steam du bureau s'ouvre alors *dans* l'instance headless, invisible à l'écran. C'est utile seulement si le PC sert surtout de serveur.
+- **`steamd-session-hook.service`** est rattaché à `graphical-session.target`, que Plasma démarre à la connexion. À la connexion, il s'exécute *avant* le bureau (`Type=oneshot`, donc bloquant) : il réveille le superviseur (SIGUSR1) et attend qu'il soit en veille. Le Steam du bureau démarre ensuite normalement. À la déconnexion, il réveille le superviseur pour une reprise immédiate. Une connexion SSH n'ouvre pas de session graphique et n'a aucun effet.
+- **Arrêt de Steam headless** : `steam -shutdown`, puis `STOP_TIMEOUT` secondes de délai, puis SIGTERM et enfin SIGKILL sur le groupe de processus gamescope. Un dernier balayage du cgroup du service garantit qu'aucun reste ne survit à la mise en veille.
+- **Environnement** : `DISPLAY` et `WAYLAND_DISPLAY` hérités d'une ancienne session Plasma sont retirés avant de lancer gamescope.
+- **Code de sortie `2`** : configuration invalide. C'est le seul cas où systemd ne relance pas le service.
+
+L'état courant (`running`, `standby`, `backoff`, `stopped`) et sa raison s'affichent avec :
+
+```bash
+steamd-launch --status
+```
 
 ### Commandes utiles
 
@@ -160,7 +176,7 @@ journalctl --user -u steamd -f
 ```
 
 ```bash
-systemctl --user stop steamd
+systemctl --user restart steamd
 ```
 
 En SSH, si `systemctl --user` répond « Failed to connect to bus » : `export XDG_RUNTIME_DIR=/run/user/$(id -u)`.
@@ -171,7 +187,7 @@ En SSH, si `systemctl --user` répond « Failed to connect to bus » : `export X
 steamd-doctor
 ```
 
-Le diagnostic vérifie : les binaires et le backend headless de gamescope, les fichiers installés et la validité de la conf, le linger, PipeWire et WirePlumber, `/dev/dri/renderD*` et l'encodage VA-API (si `vainfo` est présent), `/dev/uinput` (module, règle udev, groupe du nœud, appartenance de l'utilisateur et du gestionnaire systemd au groupe), le compte Steam, l'instance unique, le hook de session, la connexion Wi-Fi au boot, le pare-feu et l'état du service. Il affiche ensuite les derniers logs.
+Le diagnostic vérifie : les binaires et le backend headless de gamescope, les fichiers installés et la validité de la conf, le linger, PipeWire et WirePlumber, `/dev/dri/renderD*` et l'encodage VA-API (si `vainfo` est présent), `/dev/uinput` (module, règle udev, groupe du nœud, appartenance de l'utilisateur et du gestionnaire systemd au groupe), le compte Steam, l'état du superviseur et l'instance unique, le hook de session, le pare-feu et l'état du service. Il affiche ensuite les derniers logs.
 
 Chaque point est marqué `OK`, `KO` ou `ATTENTION`, avec une piste de correction. Le code de sortie est le nombre de `KO`. Options : `-n 100` pour afficher plus de logs, `--no-logs` pour ne pas les afficher.
 
@@ -195,8 +211,8 @@ Steam, `~/.steam` et les bibliothèques de jeux ne sont jamais touchés.
 3. **PipeWire** : `pipewire.socket`, `pipewire-pulse.socket` et `wireplumber.service` activés en utilisateur. `steamd.service` doit être ordonné après eux.
 4. **GPU** : vérifier l'accès à `/dev/dri/renderD*` sans session. Normalement ouvert, mais le diagnostic doit le contrôler.
 5. **Entrées** : sans session, `uaccess` ne s'applique pas. Il faut une règle udev qui ouvre `/dev/uinput` à un groupe dont l'utilisateur fait partie. `install.sh` ajoute l'utilisateur au groupe et recharge udev.
-6. **Instance unique** : ne jamais laisser deux Steam tourner pour le même utilisateur. Le hook de session arrête `steamd` à l'ouverture d'une session graphique locale.
-7. **Robustesse** : `Restart=on-failure` avec un délai. Les logs sont lisibles via `journalctl --user -u steamd`.
+6. **Instance unique** : ne jamais laisser deux Steam tourner pour le même utilisateur. `steamd` passe en veille à l'ouverture d'une session graphique locale et ne tue jamais un Steam qu'il n'a pas lancé.
+7. **Robustesse** : service permanent (`Restart=always`) ; Steam headless relancé avec un délai croissant en cas de plantage. Les logs sont lisibles via `journalctl --user -u steamd`.
 8. **Idempotence** : `install.sh` et `uninstall.sh` peuvent être relancés sans effet de bord. `uninstall.sh` retire tout ce que `install.sh` a ajouté (unité, règle udev, groupe en option, linger en option).
 
 ## Côté Steam Deck
@@ -218,9 +234,7 @@ Le mode jeu n'affiche rien : chaque envoi est journalisé dans `~/.local/state/s
 
 1. Dans une session de bureau normale : connexion à Steam (Steam Guard) et activation de Remote Play dans les paramètres.
 2. Connecter le Deck une première fois et saisir le PIN d'appairage sur l'hôte.
-3. Fermer Steam complètement avant de lancer `steamd`.
-4. **Wi-Fi au boot** : la connexion doit être disponible pour tous les utilisateurs, avec un mot de passe stocké par le système et non dans le trousseau KDE. Sinon, le PC n'a pas de réseau tant que personne ne s'est connecté. `steamd-doctor` le vérifie et donne la commande `nmcli` correspondante.
-5. **Pare-feu** : si ufw ou firewalld est actif, ouvrir UDP 27031-27036 et TCP 27036-27037.
+3. **Pare-feu** : si ufw ou firewalld est actif, ouvrir UDP 27031-27036 et TCP 27036-27037.
 
 ## Plan de test
 
@@ -228,10 +242,11 @@ Le mode jeu n'affiche rien : chaque envoi est journalisé dans `~/.local/state/s
 |---|---|---|
 | 1 | Commande de référence lancée en SSH, session de bureau ouverte | Le Deck voit l'hôte, et l'image, le son et les manettes fonctionnent |
 | 2 | Même commande après déconnexion du bureau | Idem. C'est ici qu'on valide uinput et PipeWire sans session |
-| 3 | `steamd.service` démarré manuellement | Idem, logs propres dans journalctl |
+| 3 | `steamd.service` démarré manuellement, sans session de bureau | Idem, logs propres dans journalctl, `steamd-launch --status` à `running` |
 | 4 | Reboot à froid, aucune connexion | Le service est actif et le Deck peut streamer |
-| 5 | Connexion au bureau en local | `steamd` s'arrête et le Steam du bureau démarre normalement |
-| 6 | Déconnexion du bureau | `steamd` redémarre, si l'option est activée |
+| 5 | Connexion au bureau en local | `steamd` passe en `standby` (le service reste actif) et le Steam du bureau démarre normalement |
+| 6 | Déconnexion du bureau | `steamd` repasse en `running` dès que le Steam du bureau est fermé |
+| 6b | Steam du bureau ouvert, `systemctl --user restart steamd` | Le Steam du bureau n'est pas interrompu, `steamd` reste en `standby` |
 | 7 | PC éteint, raccourci de réveil sur le Deck | Le PC démarre et Remote Play est disponible en moins de 60 s |
 | 8 | `steamd-doctor` | Rapport lisible, chaque point marqué OK ou KO avec une piste de correction |
 
@@ -239,13 +254,13 @@ Le mode jeu n'affiche rien : chaque envoi est journalisé dans `~/.local/state/s
 
 - **Écran noir avec le son qui passe** : problème déjà signalé avec le backend headless de gamescope. Essayer les autres modes de capture Steam, vérifier la version de gamescope, et lancer gamescope avec ses logs détaillés.
 - **Manettes inertes** : droits sur `/dev/uinput`, à vérifier avec `steamd-doctor`.
-- **Pas de réseau après un boot à froid** : connexion Wi-Fi réservée à l'utilisateur ou mot de passe dans KWallet. Voir `steamd-doctor`, section Réseau.
+- **`steamd` reste en `standby` après la déconnexion** : un Steam du bureau a survécu à la fermeture de session. `steamd` ne le tue pas volontairement : le fermer avec `steam -shutdown`.
 - **Pas d'audio** : PipeWire utilisateur pas démarré sans session, à vérifier avec `systemctl --user status pipewire`.
 - **Steam démarre mais l'hôte n'apparaît pas sur le Deck** : pare-feu (UDP 27031-27036, TCP 27036-27037) ou Remote Play désactivé.
 
 ## État d'avancement
 
-Tout le contenu du périmètre v1 est écrit. Les scripts passent `shellcheck`, et la génération de commande ainsi que l'envoi du magic packet ont été testés hors machine cible. **Le plan de test ci-dessus reste à dérouler sur le PC hôte et le Deck.** Points à confirmer en priorité :
+Tout le contenu du périmètre v1 est écrit. Les scripts passent `shellcheck`. Hors machine cible, avec de faux gamescope, Steam et logind, ont été testés : la génération de commande, l'envoi du magic packet et la supervision (lancement, relance après plantage, veille à la connexion, Steam du bureau non interrompu, reprise après sa fermeture, arrêt sans processus restant). **Le plan de test ci-dessus reste à dérouler sur le PC hôte et le Deck.** Points à confirmer en priorité :
 
 - test 2 (uinput et PipeWire sans session) ;
 - le bon déclenchement de `steamd-session-hook` par Plasma 6 (`graphical-session-pre.target` puis `graphical-session.target`) ;

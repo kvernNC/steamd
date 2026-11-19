@@ -241,6 +241,23 @@ info "Remote Play : vérifier qu'il est activé dans Steam > Paramètres > Remot
 
 # ---------------------------------------------------------------------------
 section "Instance unique et session"
+STATE_RT="${XDG_RUNTIME_DIR:-/run/user/$UID}/steamd/state"
+sd_state=$(head -1 "$STATE_RT" 2>/dev/null || true)
+sd_why=$(sed -n 2p "$STATE_RT" 2>/dev/null || true)
+pol=$(
+	DESKTOP_SESSION_POLICY=yield
+	# shellcheck source=/dev/null
+	[[ -r $CONF ]] && source "$CONF" >/dev/null 2>&1
+	echo "$DESKTOP_SESSION_POLICY"
+)
+info "politique de session : $pol"
+case $sd_state in
+running) ok "steamd : Steam headless actif" ;;
+standby) ok "steamd en veille : $sd_why" ;;
+backoff) warn "steamd : $sd_why" "voir les logs ci-dessous" ;;
+stopped) info "steamd : service arrêté" ;;
+*) info "steamd : état inconnu (service jamais démarré depuis le boot ?)" ;;
+esac
 mapfile -t steam_pids < <(pgrep -u "$UID" -x steam || true)
 if ((${#steam_pids[@]} == 0)); then
 	info "aucun Steam en cours"
@@ -249,12 +266,10 @@ else
 		cg=$(cat "/proc/$p/cgroup" 2>/dev/null || true)
 		if [[ $cg == *steamd.service* ]]; then
 			ok "Steam (pid $p) tourne dans steamd.service"
+		elif [[ $sd_state == running ]]; then
+			ko "Steam (pid $p) tourne HORS de steamd alors que steamd est actif" "fermer l'un des deux"
 		else
-			if [[ $(systemctl --user is-active steamd.service 2>/dev/null) == active ]]; then
-				ko "Steam (pid $p) tourne HORS de steamd alors que steamd est actif" "fermer l'un des deux"
-			else
-				info "Steam (pid $p) tourne hors de steamd (Steam du bureau)"
-			fi
+			info "Steam (pid $p) tourne hors de steamd (Steam du bureau), steamd le laisse tranquille"
 		fi
 	done
 fi
@@ -267,33 +282,11 @@ en=$(systemctl --user is-enabled steamd-session-hook.service 2>/dev/null || true
 if [[ $en == enabled ]]; then
 	ok "steamd-session-hook.service activé"
 else
-	warn "steamd-session-hook.service : $en (steamd ne s'arrêtera pas à la connexion au bureau)" "systemctl --user enable steamd-session-hook.service"
+	warn "steamd-session-hook.service : $en (à la connexion au bureau, steamd met jusqu'à POLL_INTERVAL à réagir, et le Steam du bureau peut s'ouvrir dans le Steam headless)" "systemctl --user enable steamd-session-hook.service"
 fi
 
 # ---------------------------------------------------------------------------
-section "Réseau"
-if have nmcli && nmcli -t general status >/dev/null 2>&1; then
-	found_wifi=0
-	while IFS=: read -r name type dev; do
-		[[ $type == 802-11-wireless ]] || continue
-		found_wifi=1
-		perms=$(nmcli -g connection.permissions connection show "$name" 2>/dev/null || true)
-		flags=$(nmcli -g 802-11-wireless-security.psk-flags connection show "$name" 2>/dev/null || true)
-		auto=$(nmcli -g connection.autoconnect connection show "$name" 2>/dev/null || true)
-		if [[ -n $perms ]]; then
-			ko "Wi-Fi « $name » réservé à un utilisateur : il ne se connectera pas au boot sans session" "nmcli connection modify \"$name\" connection.permissions ''"
-		elif [[ -n $flags && $flags != 0 && $flags != "0 (none)" ]]; then
-			ko "Wi-Fi « $name » : mot de passe stocké dans le trousseau KDE (psk-flags=$flags), indisponible sans session" "nmcli connection modify \"$name\" 802-11-wireless-security.psk-flags 0 802-11-wireless-security.psk '<mot de passe>'"
-		elif [[ $auto != yes ]]; then
-			warn "Wi-Fi « $name » : autoconnect=$auto" "nmcli connection modify \"$name\" connection.autoconnect yes"
-		else
-			ok "Wi-Fi « $name » ($dev) disponible pour tout le système, sans session"
-		fi
-	done < <(nmcli -t -f NAME,TYPE,DEVICE connection show --active 2>/dev/null)
-	((found_wifi)) || info "aucune connexion Wi-Fi active"
-else
-	info "NetworkManager absent ou inaccessible : connexion réseau au boot non vérifiée"
-fi
+section "Réseau (pare-feu)"
 fw=""
 systemctl is-active --quiet ufw 2>/dev/null && fw=ufw
 systemctl is-active --quiet firewalld 2>/dev/null && fw=firewalld
@@ -322,7 +315,6 @@ failed)
 	code=$(systemctl --user show steamd.service -p ExecMainStatus --value 2>/dev/null)
 	hint="journalctl --user -u steamd -e"
 	[[ $code == 2 ]] && hint="configuration invalide : voir les logs ci-dessous"
-	[[ $code == 3 ]] && hint="conflit avec un autre Steam ou une session de bureau : voir les logs"
 	ko "steamd.service en échec (résultat $res, code $code)" "$hint ; puis systemctl --user reset-failed steamd && systemctl --user start steamd"
 	;;
 *) info "steamd.service : $ac" ;;

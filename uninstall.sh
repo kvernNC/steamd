@@ -64,8 +64,6 @@ fi
 step "Arrêt et désactivation des services"
 for u in steamd.service steamd-session-hook.service; do
 	if systemctl --user cat "$u" >/dev/null 2>&1; then
-		# steamd-session-hook : on évite son ExecStop (qui relancerait steamd)
-		# en le désactivant avant d'arrêter steamd.
 		systemctl --user disable "$u" >/dev/null 2>&1 || true
 		note "$u désactivé"
 	fi

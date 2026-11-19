@@ -3,19 +3,19 @@ Description=steamd : Steam Big Picture dans un gamescope headless (Remote Play)
 Documentation=https://github.com/kvernNC/steamd
 Wants=pipewire.socket pipewire-pulse.socket wireplumber.service
 After=pipewire.socket pipewire-pulse.socket wireplumber.service
-# Au plus 5 échecs en 5 minutes, ensuite on abandonne.
-StartLimitIntervalSec=300
-StartLimitBurst=5
+# Service permanent : pas de limite au nombre de relances.
+StartLimitIntervalSec=0
 
 [Service]
 Type=simple
+# Superviseur : lance, met en veille et relance Steam headless selon la
+# présence d'une session de bureau. Il ne s'arrête pas de lui-même.
 ExecStart=%h/.local/bin/steamd-launch
-ExecStop=%h/.local/bin/steamd-launch --stop
-Restart=on-failure
+Restart=always
 RestartSec=10
-# 2 = configuration invalide, 3 = conflit (autre Steam ou session graphique)
-RestartPreventExitStatus=2 3
-# ExecStop laisse STOP_TIMEOUT (30 s par défaut) à Steam ; on garde de la marge.
+# 2 = configuration invalide : inutile de relancer en boucle.
+RestartPreventExitStatus=2
+# Le superviseur laisse STOP_TIMEOUT (30 s par défaut) à Steam ; on garde de la marge.
 TimeoutStopSec=60
 KillMode=mixed
 

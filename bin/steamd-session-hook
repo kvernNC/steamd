@@ -1,46 +1,52 @@
 #!/usr/bin/env bash
-# steamd-session-hook : arrête steamd à l'ouverture d'une session graphique
-# locale et le relance à sa fermeture.
+# steamd-session-hook : prévient steamd qu'une session graphique locale
+# s'ouvre ou se ferme, pour qu'il réagisse sans attendre son prochain tour.
 #
 # Appelé par steamd-session-hook.service, qui est rattaché à
 # graphical-session.target :
 #   steamd-session-hook login    (ExecStart, avant le démarrage du bureau)
 #   steamd-session-hook logout   (ExecStop, à la fermeture du bureau)
+#
+# Avec DESKTOP_SESSION_POLICY=yield, "login" attend que steamd ait rendu la
+# main (Steam headless arrêté) : le Steam du bureau démarre alors normalement.
+# steamd ne s'arrête jamais, il passe en veille puis reprend tout seul.
 set -euo pipefail
 
 log() { printf 'steamd-session-hook: %s\n' "$*" >&2; }
 
 CONF="${STEAMD_CONF:-${XDG_CONFIG_HOME:-$HOME/.config}/steamd/steamd.conf}"
-STOP_ON_LOCAL_LOGIN=true
-RESTART_ON_LOCAL_LOGOUT=true
+STATE_FILE="${XDG_RUNTIME_DIR:-/run/user/$UID}/steamd/state"
+DESKTOP_SESSION_POLICY=yield
+STOP_TIMEOUT=30
 if [[ -r $CONF ]]; then
 	# shellcheck source=/dev/null
 	source "$CONF"
 fi
 
+kick() { systemctl --user kill --kill-whom=main -s USR1 steamd.service 2>/dev/null || true; }
+
 case ${1:-} in
 login)
-	if [[ $STOP_ON_LOCAL_LOGIN != true ]]; then
-		log "STOP_ON_LOCAL_LOGIN=$STOP_ON_LOCAL_LOGIN : steamd n'est pas arrêté"
+	systemctl --user is-active --quiet steamd.service || exit 0
+	if [[ $DESKTOP_SESSION_POLICY != yield ]]; then
+		log "DESKTOP_SESSION_POLICY=$DESKTOP_SESSION_POLICY : Steam headless conservé"
 		exit 0
 	fi
-	if systemctl --user is-active --quiet steamd.service; then
-		log "session graphique locale : arrêt de steamd"
-		# Bloquant : le bureau (et son Steam) ne démarre qu'une fois steamd arrêté.
-		systemctl --user stop steamd.service
-	fi
+	log "session graphique locale : steamd passe en veille"
+	kick
+	# Bloquant (Type=oneshot) : le bureau et son Steam ne démarrent qu'une
+	# fois le Steam headless fermé.
+	limit=$((STOP_TIMEOUT + 20))
+	for ((i = 0; i < limit * 2; i++)); do
+		state=$(head -1 "$STATE_FILE" 2>/dev/null || true)
+		[[ $state == standby || $state == stopped ]] && exit 0
+		sleep 0.5
+	done
+	log "steamd n'est pas passé en veille après ${limit}s (état : ${state:-inconnu})"
 	;;
 logout)
-	if [[ $RESTART_ON_LOCAL_LOGOUT != true ]]; then
-		log "RESTART_ON_LOCAL_LOGOUT=$RESTART_ON_LOCAL_LOGOUT : steamd n'est pas relancé"
-		exit 0
-	fi
-	if systemctl --user is-enabled --quiet steamd.service; then
-		log "fin de session graphique : relance de steamd"
-		# Non bloquant : steamd-launch attend lui-même que le Steam du bureau
-		# et la session soient fermés.
-		systemctl --user start --no-block steamd.service
-	fi
+	log "fin de session graphique : steamd reprend la main dès que le Steam du bureau est fermé"
+	kick
 	;;
 *)
 	echo "usage : $0 login|logout" >&2

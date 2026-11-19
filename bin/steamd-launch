@@ -1,20 +1,27 @@
 #!/usr/bin/env bash
-# steamd-launch : lit la configuration et lance Steam (Big Picture) dans un
+# steamd-launch : superviseur permanent de Steam (Big Picture) dans un
 # gamescope headless, pour Steam Remote Play.
 #
-#   steamd-launch           lance gamescope et Steam (ExecStart de steamd.service)
-#   steamd-launch --stop    demande à Steam de se fermer proprement (ExecStop)
-#   steamd-launch --print   affiche la commande qui serait lancée, sans l'exécuter
+#   steamd-launch           boucle de supervision (ExecStart de steamd.service)
+#   steamd-launch --print   affiche la commande gamescope, sans l'exécuter
+#   steamd-launch --status  affiche l'état courant (running, standby, ...)
 #
-# Codes de sortie :
-#   2  configuration invalide            (systemd ne relance pas)
-#   3  conflit : autre Steam ou session  (systemd ne relance pas)
+# Le service ne s'arrête jamais de lui-même. À chaque tour de boucle, il décide :
+#   - aucune session graphique locale        -> Steam headless lancé (running)
+#   - session graphique locale ouverte       -> selon DESKTOP_SESSION_POLICY :
+#       yield    (défaut) : Steam headless arrêté, celui du bureau n'est jamais
+#                           touché ; steamd attend en veille (standby)
+#       takeover          : Steam headless gardé, même avec une session ouverte
+#   - un autre Steam tourne (bureau, lancé à la main...) -> jamais tué ; steamd
+#     attend qu'il se ferme (standby)
+# SIGUSR1 force une réévaluation immédiate (envoyé par steamd-session-hook).
+#
+# Code de sortie 2 : configuration invalide (systemd ne relance pas).
 set -euo pipefail
 
 USER=${USER:-$(id -un)}
 
 readonly EXIT_CONFIG=2
-readonly EXIT_CONFLICT=3
 
 log() { printf 'steamd: %s\n' "$*" >&2; }
 die() {
@@ -25,6 +32,8 @@ die() {
 }
 
 CONF="${STEAMD_CONF:-${XDG_CONFIG_HOME:-$HOME/.config}/steamd/steamd.conf}"
+RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$UID}/steamd"
+STATE_FILE="$RUNTIME_DIR/state"
 
 # --- Valeurs par défaut (écrasées par la conf) --------------------------------
 WIDTH=1280
@@ -36,28 +45,30 @@ STEAM_CAPTURE=pipewire-dmabuf
 STEAM_UI_ARG="-tenfoot"
 GAMESCOPE_EXTRA_ARGS=""
 STEAM_EXTRA_ARGS=""
-STOP_ON_LOCAL_LOGIN=true
-# shellcheck disable=SC2034 # lu par steamd-session-hook, pas ici
-RESTART_ON_LOCAL_LOGOUT=true
-STEAM_WAIT_TIMEOUT=60
+DESKTOP_SESSION_POLICY=yield
+POLL_INTERVAL=5
+RESTART_DELAY=10
 STOP_TIMEOUT=30
 GAMESCOPE_BIN=gamescope
 STEAM_BIN=steam
 
-if [[ -r $CONF ]]; then
-	# shellcheck source=/dev/null
-	source "$CONF"
-else
-	log "pas de configuration ($CONF), valeurs par défaut utilisées"
-fi
+load_conf() {
+	if [[ -r $CONF ]]; then
+		# shellcheck source=/dev/null
+		source "$CONF"
+	else
+		log "pas de configuration ($CONF), valeurs par défaut utilisées"
+	fi
+}
 
 is_uint() { [[ $1 =~ ^[0-9]+$ ]]; }
 
 validate_conf() {
 	local v
-	for v in WIDTH HEIGHT REFRESH STEAM_WAIT_TIMEOUT STOP_TIMEOUT; do
+	for v in WIDTH HEIGHT REFRESH POLL_INTERVAL RESTART_DELAY STOP_TIMEOUT; do
 		is_uint "${!v}" || die $EXIT_CONFIG "$v doit être un entier (valeur : '${!v}')"
 	done
+	((POLL_INTERVAL >= 1)) || die $EXIT_CONFIG "POLL_INTERVAL doit être >= 1"
 	for v in APP_WIDTH APP_HEIGHT; do
 		[[ -z ${!v} ]] || is_uint "${!v}" || die $EXIT_CONFIG "$v doit être vide ou entier (valeur : '${!v}')"
 	done
@@ -65,49 +76,12 @@ validate_conf() {
 	pipewire-dmabuf | pipewire | none) ;;
 	*) die $EXIT_CONFIG "STEAM_CAPTURE doit valoir pipewire-dmabuf, pipewire ou none (valeur : '$STEAM_CAPTURE')" ;;
 	esac
+	case $DESKTOP_SESSION_POLICY in
+	yield | takeover) ;;
+	*) die $EXIT_CONFIG "DESKTOP_SESSION_POLICY doit valoir yield ou takeover (valeur : '$DESKTOP_SESSION_POLICY')" ;;
+	esac
 	command -v "$GAMESCOPE_BIN" >/dev/null || die $EXIT_CONFIG "gamescope introuvable ($GAMESCOPE_BIN)"
 	command -v "$STEAM_BIN" >/dev/null || die $EXIT_CONFIG "steam introuvable ($STEAM_BIN)"
-}
-
-# Steam client déjà lancé pour cet utilisateur ?
-steam_running() { pgrep -u "$UID" -x steam >/dev/null; }
-
-# Session graphique locale ouverte pour cet utilisateur ?
-# Regarde à la fois graphical-session.target et logind (sessions non systemd).
-local_graphical_session() {
-	if systemctl --user is-active --quiet graphical-session.target 2>/dev/null; then
-		return 0
-	fi
-	local s type remote state
-	for s in $(loginctl show-user "$UID" -p Sessions --value 2>/dev/null); do
-		type=$(loginctl show-session "$s" -p Type --value 2>/dev/null) || continue
-		remote=$(loginctl show-session "$s" -p Remote --value 2>/dev/null) || continue
-		state=$(loginctl show-session "$s" -p State --value 2>/dev/null) || continue
-		if [[ ($type == wayland || $type == x11) && $remote == no && $state != closing ]]; then
-			return 0
-		fi
-	done
-	return 1
-}
-
-# Attend qu'il n'y ait ni autre Steam ni session graphique (si demandé).
-wait_for_free_slot() {
-	local waited=0 reason
-	while :; do
-		reason=""
-		if steam_running; then
-			reason="un autre Steam tourne déjà pour $USER"
-		elif [[ $STOP_ON_LOCAL_LOGIN == true ]] && local_graphical_session; then
-			reason="une session graphique locale est ouverte (STOP_ON_LOCAL_LOGIN=true)"
-		fi
-		[[ -z $reason ]] && return 0
-		if ((waited >= STEAM_WAIT_TIMEOUT)); then
-			die $EXIT_CONFLICT "$reason ; abandon après ${STEAM_WAIT_TIMEOUT}s"
-		fi
-		((waited == 0)) && log "en attente : $reason (max ${STEAM_WAIT_TIMEOUT}s)"
-		sleep 2
-		waited=$((waited + 2))
-	done
 }
 
 build_command() {
@@ -132,46 +106,193 @@ build_command() {
 	CMD+=("${st_extra[@]}")
 }
 
-do_stop() {
-	steam_running || exit 0
-	log "demande d'arrêt propre à Steam (max ${STOP_TIMEOUT}s)"
-	"$STEAM_BIN" -shutdown >/dev/null 2>&1 &
-	local i
-	for ((i = 0; i < STOP_TIMEOUT; i++)); do
-		steam_running || {
-			log "Steam fermé"
-			exit 0
-		}
-		sleep 1
+# --- Détection ----------------------------------------------------------------
+
+# Un Steam client tourne-t-il pour cet utilisateur (le nôtre ou un autre) ?
+steam_running() { pgrep -u "$UID" -x steam >/dev/null; }
+
+# Session graphique locale ouverte pour cet utilisateur ? On regarde logind
+# (la session existe dès la connexion SDDM, avant le bureau) et
+# graphical-session.target. Une session en cours de fermeture ne compte pas.
+local_graphical_session() {
+	local s type remote state
+	for s in $(loginctl show-user "$UID" -p Sessions --value 2>/dev/null); do
+		type=$(loginctl show-session "$s" -p Type --value 2>/dev/null) || continue
+		remote=$(loginctl show-session "$s" -p Remote --value 2>/dev/null) || continue
+		state=$(loginctl show-session "$s" -p State --value 2>/dev/null) || continue
+		if [[ ($type == wayland || $type == x11) && $remote == no && $state != closing ]]; then
+			return 0
+		fi
 	done
-	log "Steam ne s'est pas fermé à temps ; systemd termine les processus restants"
+	systemctl --user is-active --quiet graphical-session.target 2>/dev/null
+}
+
+# --- Processus fils (gamescope + Steam) ---------------------------------------
+CHILD=0
+
+child_alive() {
+	((CHILD > 0)) || return 1
+	local st
+	st=$(awk '{print $3}' "/proc/$CHILD/stat" 2>/dev/null) || return 1
+	[[ $st != Z ]]
+}
+
+start_child() {
+	log "lancement : ${CMD[*]}"
+	# Variables héritées d'une ancienne session de bureau (Plasma les importe
+	# dans le gestionnaire systemd utilisateur) : gamescope ne doit pas
+	# s'imbriquer dedans.
+	# setsid : gamescope, Steam et leurs descendants forment un groupe de
+	# processus à part, qu'on peut arrêter d'un coup.
+	(
+		unset DISPLAY WAYLAND_DISPLAY
+		exec setsid "${CMD[@]}"
+	) &
+	CHILD=$!
+	CHILD_STARTED=$SECONDS
+}
+
+# Arrêt propre : steam -shutdown, puis gamescope, puis SIGKILL en dernier recours.
+stop_child() {
+	if ! child_alive && ! group_alive; then
+		CHILD=0
+		return 0
+	fi
+	log "arrêt de Steam headless ($1)"
+	if steam_running; then
+		"$STEAM_BIN" -shutdown >/dev/null 2>&1 &
+		local i
+		for ((i = 0; i < STOP_TIMEOUT; i++)); do
+			child_alive || break
+			steam_running || break
+			sleep 1
+		done
+	fi
+	if child_alive || group_alive; then
+		kill -TERM -- "-$CHILD" 2>/dev/null || true
+		for ((i = 0; i < 10; i++)); do
+			child_alive || group_alive || break
+			sleep 0.5
+		done
+	fi
+	if child_alive || group_alive; then
+		log "gamescope ou Steam ne répond pas, SIGKILL"
+		kill -KILL -- "-$CHILD" 2>/dev/null || true
+	fi
+	wait "$CHILD" 2>/dev/null || true
+	sweep_cgroup
+	CHILD=0
+	log "Steam headless arrêté"
+}
+
+# Reste-t-il des processus dans le groupe du fils ?
+group_alive() { ((CHILD > 0)) && pgrep -g "$CHILD" >/dev/null; }
+
+# Filet de sécurité : sous systemd, tout processus restant dans le cgroup de
+# steamd.service (hors ce superviseur) est un reste de Steam headless. En
+# veille, le service reste actif et systemd ne ferait pas ce ménage.
+sweep_cgroup() {
+	local cg procs p n=0
+	cg=$(sed -n 's/^0:://p' /proc/self/cgroup 2>/dev/null)
+	[[ $cg == */steamd.service ]] || return 0
+	procs="/sys/fs/cgroup$cg/cgroup.procs"
+	[[ -r $procs ]] || return 0
+	while read -r p; do
+		[[ $p == "$$" || $p == "$BASHPID" ]] && continue
+		kill -KILL "$p" 2>/dev/null && n=$((n + 1))
+	done <"$procs"
+	((n == 0)) || log "$n processus restants terminés (SIGKILL)"
+}
+
+# --- État (lu par steamd-session-hook et steamd-doctor) ------------------------
+STATE=""
+set_state() {
+	local new=$1 why=$2
+	if [[ $new != "$STATE" ]]; then
+		log "état : $new ($why)"
+		STATE=$new
+	fi
+	printf '%s\n%s\n' "$new" "$why" >"$STATE_FILE.tmp" && mv -f "$STATE_FILE.tmp" "$STATE_FILE"
+}
+
+# --- Boucle principale --------------------------------------------------------
+KICK=0
+STOPPING=0
+on_term() { STOPPING=1; }
+on_usr1() { KICK=1; }
+
+# Attente interruptible par SIGUSR1/SIGTERM.
+nap() {
+	((KICK || STOPPING)) && return 0
+	sleep "$1" &
+	local sp=$!
+	wait "$sp" 2>/dev/null || true
+	kill "$sp" 2>/dev/null || true
+}
+
+supervise() {
+	local fails=0 delay=0 why
+	trap on_term TERM INT
+	trap on_usr1 USR1
+	trap 'set_state stopped "service arrêté"' EXIT
+	log "configuration : $CONF ; politique de session : $DESKTOP_SESSION_POLICY"
+
+	while ((!STOPPING)); do
+		KICK=0
+
+		# Fin inattendue du fils : on relance après un délai croissant.
+		if ((CHILD > 0)) && ! child_alive; then
+			local rc=0
+			wait "$CHILD" 2>/dev/null || rc=$?
+			# Des restes de Steam peuvent survivre à gamescope.
+			kill -KILL -- "-$CHILD" 2>/dev/null || true
+			sweep_cgroup
+			CHILD=0
+			if ((SECONDS - CHILD_STARTED < 60)); then fails=$((fails + 1)); else fails=1; fi
+			delay=$((RESTART_DELAY * fails))
+			((delay > 300)) && delay=300
+			log "gamescope/Steam s'est terminé (code $rc), nouvelle tentative dans ${delay}s"
+			set_state backoff "fin inattendue (code $rc), relance dans ${delay}s"
+			nap "$delay"
+			continue
+		fi
+
+		if [[ $DESKTOP_SESSION_POLICY == yield ]] && local_graphical_session; then
+			stop_child "session graphique locale ouverte"
+			set_state standby "session graphique locale ouverte : le Steam du bureau a la priorité"
+		elif child_alive; then
+			set_state running "Steam headless actif"
+		elif steam_running; then
+			set_state standby "un autre Steam tourne déjà pour $USER : il n'est pas interrompu"
+		else
+			start_child
+			set_state running "Steam headless actif"
+		fi
+		nap "$POLL_INTERVAL"
+	done
+
+	stop_child "arrêt du service"
 }
 
 case ${1:-} in
---stop)
-	is_uint "$STOP_TIMEOUT" || STOP_TIMEOUT=30
-	do_stop
-	exit 0
-	;;
 --print)
+	load_conf
 	validate_conf
 	build_command
 	printf '%q ' "${CMD[@]}"
 	echo
 	exit 0
 	;;
+--status)
+	if [[ -r $STATE_FILE ]]; then cat "$STATE_FILE"; else echo "inconnu"; fi
+	exit 0
+	;;
 "") ;;
-*) die $EXIT_CONFIG "option inconnue : $1 (attendu : --stop, --print)" ;;
+*) die $EXIT_CONFIG "option inconnue : $1 (attendu : --print, --status)" ;;
 esac
 
+load_conf
 validate_conf
 build_command
-wait_for_free_slot
-
-# Variables héritées d'une ancienne session de bureau (Plasma les importe dans
-# le gestionnaire systemd utilisateur) : gamescope ne doit pas s'imbriquer dedans.
-unset DISPLAY WAYLAND_DISPLAY
-
-log "configuration : $CONF"
-log "lancement : ${CMD[*]}"
-exec "${CMD[@]}"
+mkdir -p "$RUNTIME_DIR"
+supervise

@@ -27,16 +27,24 @@ GAMESCOPE_EXTRA_ARGS=""
 STEAM_EXTRA_ARGS=""
 
 # --- Cohabitation avec la session de bureau -----------------------------------
-# Arrêter steamd quand une session graphique locale s'ouvre.
-STOP_ON_LOCAL_LOGIN=true
-# Relancer steamd quand cette session graphique se ferme.
-RESTART_ON_LOCAL_LOGOUT=true
+# steamd est un service permanent. Il ne tue jamais un Steam qu'il n'a pas
+# lancé lui-même (celui du bureau par exemple) : il attend qu'il se ferme.
+#   yield     (défaut) dès qu'une session graphique locale s'ouvre, Steam
+#             headless est fermé pour laisser la place au Steam du bureau ;
+#             steamd reste en veille et reprend après la déconnexion.
+#   takeover  Steam headless reste actif même pendant une session de bureau
+#             (le Steam du bureau s'ouvre alors dans l'instance headless,
+#             invisible à l'écran).
+DESKTOP_SESSION_POLICY=yield
 
 # --- Délais (secondes) --------------------------------------------------------
-# Au démarrage : attente maximale qu'un autre Steam ou une session graphique
-# se termine avant d'abandonner.
-STEAM_WAIT_TIMEOUT=60
-# À l'arrêt : temps laissé à Steam pour se fermer proprement.
+# Intervalle entre deux vérifications (session, Steam). La connexion au bureau
+# est détectée tout de suite grâce à steamd-session-hook.
+POLL_INTERVAL=5
+# Délai avant de relancer Steam headless après une fin inattendue
+# (multiplié par le nombre d'échecs rapprochés, plafonné à 300).
+RESTART_DELAY=10
+# Temps laissé à Steam pour se fermer proprement avant d'être forcé.
 STOP_TIMEOUT=30
 
 # --- Binaires (rarement utile) ------------------------------------------------
