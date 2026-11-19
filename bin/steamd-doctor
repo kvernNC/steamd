@@ -68,8 +68,13 @@ echo "== Réseau"
 cg=$(systemctl --user show -p ControlGroup --value steamd.service)
 svc_pids=$(cat "/sys/fs/cgroup$cg/cgroup.procs" 2>/dev/null)
 if [[ -n $svc_pids ]]; then
+    # 27036 (découverte) doit être à steamd ; 27037 n'est ouvert que pendant certains streams
     for port in 27036 27037; do
         owners=$(ss -Htulnp "( sport = :$port )" | grep -o 'pid=[0-9]*' | cut -d= -f2 | sort -u)
+        if [[ -z $owners && $port == 27037 ]]; then
+            echo "     port 27037 libre (normal hors stream)"
+            continue
+        fi
         check "port $port tenu par le Steam de steamd" \
             "désactiver Remote Play et les transferts LAN dans le Steam du bureau, le relancer, puis systemctl --user restart steamd" \
             bash -c '[[ -n $1 ]] || exit 1; for o in $1; do grep -qx "$o" <<<"$2" || exit 1; done' _ "$owners" "$svc_pids"

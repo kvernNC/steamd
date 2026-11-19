@@ -11,6 +11,8 @@ ExecStart=@BINDIR@/steamd-launch
 ExecStop=@BINDIR@/steamd-launch --stop
 Restart=on-failure
 RestartSec=10
+# Configuration invalide (steamd-launch sort en 2) : inutile de relancer
+RestartPreventExitStatus=2
 TimeoutStopSec=45
 
 [Install]

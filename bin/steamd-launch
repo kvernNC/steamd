@@ -32,7 +32,7 @@ set_encoder() {
         "")       return ;;
         hardware) val=1 ;;
         software) val=0 ;;
-        *) log "ENCODER invalide : $ENCODER"; exit 1 ;;
+        *) log "ENCODER invalide : $ENCODER"; exit 2 ;;
     esac
     for vdf in "$XDG_DATA_HOME"/Steam/userdata/*/config/localconfig.vdf; do
         [[ -f $vdf ]] || continue
@@ -77,11 +77,18 @@ if [[ $VAAPI_STRICT_RC == true ]]; then
     fi
 fi
 
+for v in WIDTH HEIGHT REFRESH; do
+    if ! [[ ${!v} =~ ^[1-9][0-9]{0,4}$ ]] || ((${!v} > 16384)); then
+        log "$v invalide dans $CONF : « ${!v} »"
+        exit 2
+    fi
+done
+
 case $STEAM_CAPTURE in
     pipewire-dmabuf) capture=(-pipewire-dmabuf) ;;
     pipewire)        capture=(-pipewire) ;;
     none)            capture=() ;;
-    *) log "STEAM_CAPTURE invalide : $STEAM_CAPTURE"; exit 1 ;;
+    *) log "STEAM_CAPTURE invalide : $STEAM_CAPTURE"; exit 2 ;;
 esac
 
 eval "gs_extra=($GAMESCOPE_EXTRA_ARGS)"

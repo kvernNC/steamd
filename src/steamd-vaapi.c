@@ -43,6 +43,14 @@ static int debug(void)
 static void *next_sym(const char *name)
 {
     void *p = dlsym(RTLD_NEXT, name);
+    if (!p) {
+        /* Steam charge libva par dlopen en RTLD_LOCAL, hors de portée de RTLD_NEXT */
+        void *h = dlopen("libva.so.2", RTLD_LAZY | RTLD_NOLOAD);
+        if (!h)
+            h = dlopen("libva.so.2", RTLD_LAZY);
+        if (h)
+            p = dlsym(h, name);
+    }
     if (!p)
         LOG("%s introuvable\n", name);
     return p;
