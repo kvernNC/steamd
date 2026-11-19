@@ -1,7 +1,7 @@
 # steamd — copier dans ~/.config/steamd/steamd.conf (fait par install.sh)
 WIDTH=1280
 HEIGHT=800
-REFRESH=60
+REFRESH=60                      # fréquence du client : 90 pour un Deck OLED
 STEAM_CAPTURE=pipewire-dmabuf   # pipewire-dmabuf | pipewire | none
 GAMESCOPE_EXTRA_ARGS=""         # ex. "--verbose"
 STEAM_EXTRA_ARGS=""
