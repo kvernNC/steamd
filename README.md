@@ -86,6 +86,7 @@ REFRESH=60
 STEAM_CAPTURE=pipewire-dmabuf   # pipewire-dmabuf | pipewire | none
 GAMESCOPE_EXTRA_ARGS=""
 STEAM_EXTRA_ARGS=""
+ENCODER=""                      # hardware | software | vide
 #STEAMD_HOME="$HOME/.local/share/steamd-home"
 ```
 
@@ -140,7 +141,7 @@ Côté bureau : désactiver Remote Play (Paramètres > Remote Play) et les trans
 - **Pas d'audio** : PipeWire utilisateur pas démarré sans session, à vérifier avec `systemctl --user status pipewire`.
 - **Steam démarre mais l'hôte n'apparaît pas sur le Deck** : le Steam du bureau garde les ports (voir les prérequis), un pare-feu bloque (UDP 27031-27036, TCP 27036-27037), ou Remote Play est désactivé dans le client steamd.
 - **Le Deck demande un appairage** : le faire avec `steamd-launch --setup`, service arrêté.
-- **Pertes de paquets quand l'image bouge, avec un GPU AMD** : l'encodeur VA-API dépasse ponctuellement le débit visé, et ces pointes saturent le Wi-Fi. Monter le débit aggrave les pertes. Dans le client steamd, décocher Paramètres > Remote Play > Options avancées de l'hôte > « Activer l'encodage matériel » pour passer en x264. Sur un Deck, on a mesuré 0 % de pertes et 9,8 ms de latence d'affichage en 1280×800.
+- **Pertes de paquets quand l'image bouge, avec un GPU AMD** : l'encodeur VA-API dépasse ponctuellement le débit visé, et ces pointes saturent le Wi-Fi. Monter le débit aggrave les pertes. Pour passer en x264, mettre `ENCODER=software` dans `steamd.conf`. `steamd-launch` modifie alors `EnableHardwareEncoding` dans `localconfig.vdf` avant chaque démarrage. On peut aussi décocher « Activer l'encodage matériel » dans Paramètres > Remote Play > Options avancées de l'hôte du client steamd. Sur un Deck, on a mesuré 0 % de pertes et 9,8 ms de latence d'affichage en 1280×800.
 - **Lag sans pertes ni ping élevé** : le délai vient d'avant la capture. Mettre `REFRESH` à la fréquence du client (90 pour un Deck OLED, 60 pour un Deck LCD ou une TV), couper la synchro verticale dans le jeu et utiliser son limiteur d'images.
 
 ## Critères de fin pour la v1

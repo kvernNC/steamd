@@ -8,7 +8,7 @@ set -euo pipefail
 
 CONF="${XDG_CONFIG_HOME:-$HOME/.config}/steamd/steamd.conf"
 WIDTH=1280 HEIGHT=800 REFRESH=60 STEAM_CAPTURE=pipewire-dmabuf
-GAMESCOPE_EXTRA_ARGS="" STEAM_EXTRA_ARGS=""
+GAMESCOPE_EXTRA_ARGS="" STEAM_EXTRA_ARGS="" ENCODER=""
 STEAMD_HOME="${XDG_DATA_HOME:-$HOME/.local/share}/steamd-home"
 # shellcheck source=/dev/null
 [[ -r $CONF ]] && source "$CONF"
@@ -18,6 +18,25 @@ log() { echo "steamd: $*" >&2; }
 mkdir -p "$STEAMD_HOME"
 export HOME=$STEAMD_HOME
 export XDG_CONFIG_HOME=$HOME/.config XDG_DATA_HOME=$HOME/.local/share XDG_CACHE_HOME=$HOME/.cache
+
+# Encodeur Remote Play (option « Activer l'encodage matériel ») : réglé avant le démarrage de Steam
+set_encoder() {
+    local val vdf found=false
+    case $ENCODER in
+        "")       return ;;
+        hardware) val=1 ;;
+        software) val=0 ;;
+        *) log "ENCODER invalide : $ENCODER"; exit 1 ;;
+    esac
+    for vdf in "$XDG_DATA_HOME"/Steam/userdata/*/config/localconfig.vdf; do
+        [[ -f $vdf ]] || continue
+        if grep -q '"EnableHardwareEncoding"' "$vdf"; then
+            sed -i -E 's/^(\s*"EnableHardwareEncoding"\s+)"[01]"/\1"'"$val"'"/' "$vdf"
+            found=true
+        fi
+    done
+    $found || log "EnableHardwareEncoding absent : basculer l'option une fois dans l'UI (steamd-launch --setup)"
+}
 
 case ${1:-} in
     --stop)
@@ -33,9 +52,12 @@ case ${1:-} in
             log "arrêter d'abord le service : systemctl --user stop steamd"
             exit 1
         fi
+        set_encoder
         log "client steamd en fenêtre (HOME=$HOME) ; le fermer complètement à la fin"
         exec steam ;;
 esac
+
+set_encoder
 
 case $STEAM_CAPTURE in
     pipewire-dmabuf) capture=(-pipewire-dmabuf) ;;

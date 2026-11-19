@@ -5,5 +5,6 @@ REFRESH=60                      # fréquence du client : 90 pour un Deck OLED
 STEAM_CAPTURE=pipewire-dmabuf   # pipewire-dmabuf | pipewire | none
 GAMESCOPE_EXTRA_ARGS=""         # ex. "--verbose"
 STEAM_EXTRA_ARGS=""
+ENCODER=""                      # hardware | software (x264) | vide = réglage de l'UI ; software conseillé sur GPU AMD
 # HOME dédié du client Steam de steamd (distinct du Steam du bureau)
 #STEAMD_HOME="$HOME/.local/share/steamd-home"
