@@ -1,0 +1,141 @@
+# steamd
+
+> Steam as a service, à la demande. Le PC fixe démarre sans écran ni session ouverte, Steam tourne dans un gamescope headless, et le Steam Deck joue via **Steam Remote Play natif**, sans Moonlight.
+
+## Objectif
+
+Permettre ce parcours, sans aucune intervention physique sur le PC hôte :
+
+1. Sur le Steam Deck, lancer le raccourci « Réveil PC » en mode jeu.
+2. Le PC se réveille (Wake-on-LAN relayé par un Raspberry Pi, déjà en place).
+3. Au boot, sans connexion utilisateur, un service lance Steam dans gamescope en mode headless.
+4. Sur le Deck, ouvrir la bibliothèque Steam, choisir un jeu, puis « Streamer depuis <hôte> ».
+5. Aucun écran physique ni virtuel n'est utilisé côté OS : c'est gamescope qui sert de surface de présentation, et Remote Play capture sa sortie via PipeWire.
+
+## Contexte matériel et logiciel
+
+| Élément | Valeur |
+|---|---|
+| Hôte | PC fixe, CachyOS (base Arch), KDE Plasma / Wayland |
+| GPU | AMD Radeon RX 9070 XT (mesa / RADV, encodage VA-API) |
+| Réseau hôte | Wi-Fi pour le stream ; Ethernet de la carte mère relié à un Raspberry Pi pour le WoL |
+| Relais WoL | Raspberry Pi B+ allumé en permanence. Il écoute les magic packets sur le LAN et retraduit ceux destinés au PC vers la MAC Ethernet. **Hors du périmètre de ce repo.** |
+| Client | Steam Deck (SteamOS), Steam Remote Play natif |
+| Steam hôte | Installation native (paquet `steam`). Même utilisateur et même `~/.steam` que l'usage bureau : **pas de seconde installation ni de bibliothèque en double**. |
+
+## Périmètre
+
+### Inclus
+
+- Service systemd **utilisateur** `steamd.service` qui lance `gamescope --backend headless` avec Steam en Big Picture.
+- Activation du *linger* pour que le service démarre au boot sans session.
+- Dépendances PipeWire et WirePlumber en services utilisateur (vidéo et audio sans session graphique).
+- Règle udev donnant l'accès à `/dev/uinput` sans session active (manettes virtuelles du Remote Play), par exemple via le groupe `input`.
+- Gestion du conflit avec une session de bureau : un seul Steam à la fois. Quand l'utilisateur se connecte localement, `steamd` s'arrête, et il peut redémarrer quand l'utilisateur se déconnecte (optionnel, configurable).
+- Fichier de configuration simple : résolution, fréquence et options gamescope/Steam.
+- Script d'installation et de désinstallation idempotent.
+- Côté Deck : script de réveil (`wake-host.sh`) à ajouter comme raccourci non-Steam en mode jeu.
+- Script de diagnostic qui vérifie linger, PipeWire, les droits sur `/dev/dri` et `/dev/uinput`, et l'état du service, puis affiche les derniers logs.
+
+### Exclus
+
+- Moonlight, Sunshine, Wolf et tout serveur de streaming tiers.
+- Le relais WoL du Raspberry Pi, déjà fonctionnel.
+- Le multi-utilisateur et les sessions simultanées.
+- Docker ou Podman. Pas de conteneur dans la v1 : Steam tourne nativement sous l'utilisateur.
+
+## Arborescence cible
+
+```
+steamd/
+├── README.md
+├── config/
+│   └── steamd.conf.example     # résolution, fréquence, options
+├── systemd/
+│   └── steamd.service          # unité utilisateur
+├── udev/
+│   └── 60-steamd-uinput.rules
+├── bin/
+│   ├── steamd-launch           # wrapper : lit la conf, lance gamescope et Steam
+│   ├── steamd-doctor           # diagnostic
+│   └── steamd-session-hook     # arrêt et reprise selon la session locale
+├── deck/
+│   └── wake-host.sh            # envoi du magic packet depuis le Deck
+├── install.sh
+└── uninstall.sh
+```
+
+## Commande de référence
+
+Point de départ à valider manuellement avant toute automatisation :
+
+```bash
+gamescope -W 1280 -H 800 -w 1280 -h 800 -r 60 \
+  --backend headless --steam -- \
+  steam -tenfoot -pipewire-dmabuf
+```
+
+- `-W`/`-H` : résolution de sortie de gamescope. `-w`/`-h` : résolution vue par l'application. On utilise 1280×800, la résolution native du Deck.
+- Plan B en cas d'écran noir : remplacer `-pipewire-dmabuf` par `-pipewire`, puis retirer l'option. Le wrapper doit permettre de changer ce choix dans la conf.
+
+## Configuration (`~/.config/steamd/steamd.conf`)
+
+```ini
+WIDTH=1280
+HEIGHT=800
+REFRESH=60
+STEAM_CAPTURE=pipewire-dmabuf   # pipewire-dmabuf | pipewire | none
+GAMESCOPE_EXTRA_ARGS=""
+STEAM_EXTRA_ARGS=""
+STOP_ON_LOCAL_LOGIN=true
+RESTART_ON_LOCAL_LOGOUT=true
+```
+
+## Exigences techniques
+
+1. **Sans session** : le service doit fonctionner après un boot à froid, sans connexion à SDDM. On le vérifie en redémarrant puis en se connectant uniquement en SSH.
+2. **Linger** : `loginctl enable-linger $USER`, géré par `install.sh`.
+3. **PipeWire** : `pipewire.socket`, `pipewire-pulse.socket` et `wireplumber.service` activés en utilisateur. `steamd.service` doit être ordonné après eux.
+4. **GPU** : vérifier l'accès à `/dev/dri/renderD*` sans session. Normalement ouvert, mais le diagnostic doit le contrôler.
+5. **Entrées** : sans session, `uaccess` ne s'applique pas. Il faut une règle udev qui ouvre `/dev/uinput` à un groupe dont l'utilisateur fait partie. `install.sh` ajoute l'utilisateur au groupe et recharge udev.
+6. **Instance unique** : ne jamais laisser deux Steam tourner pour le même utilisateur. Le hook de session arrête `steamd` à l'ouverture d'une session graphique locale.
+7. **Robustesse** : `Restart=on-failure` avec un délai. Les logs sont lisibles via `journalctl --user -u steamd`.
+8. **Idempotence** : `install.sh` et `uninstall.sh` peuvent être relancés sans effet de bord. `uninstall.sh` retire tout ce que `install.sh` a ajouté (unité, règle udev, groupe en option, linger en option).
+
+## Côté Steam Deck
+
+- `deck/wake-host.sh` envoie un magic packet en broadcast sur le LAN (MAC et broadcast configurables en tête de script). Sans dépendance exotique : Python stdlib ou `wakeonlan` s'il est présent.
+- L'ajouter en jeu non-Steam depuis le mode bureau, pour pouvoir le lancer depuis le mode jeu.
+- Le Pi se charge de la traduction vers la carte Ethernet du PC.
+
+## Prérequis manuels (une seule fois)
+
+1. Dans une session de bureau normale : connexion à Steam (Steam Guard) et activation de Remote Play dans les paramètres.
+2. Connecter le Deck une première fois et saisir le PIN d'appairage sur l'hôte.
+3. Fermer Steam complètement avant de lancer `steamd`.
+
+## Plan de test
+
+| # | Test | Résultat attendu |
+|---|---|---|
+| 1 | Commande de référence lancée en SSH, session de bureau ouverte | Le Deck voit l'hôte, et l'image, le son et les manettes fonctionnent |
+| 2 | Même commande après déconnexion du bureau | Idem. C'est ici qu'on valide uinput et PipeWire sans session |
+| 3 | `steamd.service` démarré manuellement | Idem, logs propres dans journalctl |
+| 4 | Reboot à froid, aucune connexion | Le service est actif et le Deck peut streamer |
+| 5 | Connexion au bureau en local | `steamd` s'arrête et le Steam du bureau démarre normalement |
+| 6 | Déconnexion du bureau | `steamd` redémarre, si l'option est activée |
+| 7 | PC éteint, raccourci de réveil sur le Deck | Le PC démarre et Remote Play est disponible en moins de 60 s |
+| 8 | `steamd-doctor` | Rapport lisible, chaque point marqué OK ou KO avec une piste de correction |
+
+## Problèmes connus et pistes
+
+- **Écran noir avec le son qui passe** : problème déjà signalé avec le backend headless de gamescope. Essayer les autres modes de capture Steam, vérifier la version de gamescope, et lancer gamescope avec ses logs détaillés.
+- **Manettes inertes** : droits sur `/dev/uinput`, à vérifier avec `steamd-doctor`.
+- **Pas d'audio** : PipeWire utilisateur pas démarré sans session, à vérifier avec `systemctl --user status pipewire`.
+- **Steam démarre mais l'hôte n'apparaît pas sur le Deck** : pare-feu (UDP 27031-27036, TCP 27036-27037) ou Remote Play désactivé.
+
+## Critères de fin pour la v1
+
+- Les tests 1 à 8 passent.
+- Une installation sur une CachyOS propre ne demande que : cloner, `./install.sh`, les prérequis manuels, et un reboot.
+- Le README couvre l'installation, la configuration, le diagnostic et la désinstallation.
