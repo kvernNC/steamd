@@ -1,0 +1,16 @@
+#!/bin/bash
+# Faux Steam. Mode headless (-tenfoot) : tourne jusqu'à -shutdown ou SIGTERM,
+# et simule une partie (processus « reaper SteamLaunch AppId=620 ») tant que
+# le fichier $FAKE/game existe. Sans -tenfoot : « Steam du bureau » lancé.
+if [[ $1 == -shutdown ]]; then pkill -u "$UID" -f 'fake/steam -tenfoot'; exit 0; fi
+if [[ $1 != -tenfoot ]]; then echo "STEAM_BUREAU_LANCE" >>"$FAKE/events"; exit 0; fi
+trap 'exit 0' TERM
+g=0
+while :; do
+	if [[ -e $FAKE/game ]] && ((g == 0)); then
+		(exec -a 'reaper SteamLaunch AppId=620 -- /jeux/portal2' sleep 1000) &
+		g=$!
+	fi
+	if [[ ! -e $FAKE/game ]] && ((g)); then kill "$g"; g=0; fi
+	sleep 0.2
+done

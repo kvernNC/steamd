@@ -1,0 +1,6 @@
+#!/bin/bash
+# Faux gamescope : lance la commande après « -- ».
+[[ " $* " == *" -- "* ]] || { echo "gamescope 3.16.1 (headless)"; exit 0; }
+while [[ $1 != -- ]]; do shift; done
+shift
+"$@"

@@ -1,0 +1,10 @@
+#!/bin/bash
+# Faux systemctl : graphical-session.target jamais actif (logind suffit),
+# kill -s USR1 réveille le superviseur, suspend/set journalisés.
+case "$*" in
+*is-active*graphical*) exit 1 ;;
+*is-active*) exit 0 ;;
+*kill*USR1*) kill -USR1 "$(cat "$FAKE/sup.pid")" ;;
+suspend | poweroff) echo "SYSTEMCTL_$1" >>"$FAKE/events" ;;
+esac
+exit 0

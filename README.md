@@ -70,6 +70,10 @@ steamd/
 │   └── wake-host.sh            # envoi du magic packet depuis le Deck
 ├── wifi/
 │   └── wifi-tune.sh            # réglages Wi-Fi anti-pics, Deck et PC (sans Decky)
+├── tests/
+│   ├── run.sh                  # tests du superviseur et de steamd-steamcfg
+│   └── fake/                   # faux gamescope, Steam, logind, systemctl...
+├── CLAUDE.md                   # passation : état du projet et reste à faire
 ├── install.sh
 └── uninstall.sh
 ```
@@ -479,6 +483,10 @@ Tout le contenu du périmètre v1 est écrit. Les scripts passent `shellcheck`. 
 - la détection d'une partie via `reaper SteamLaunch AppId=` sur la version de Steam installée ;
 - le lancement du Steam du bureau depuis le service (environnement graphique importé par Plasma), l'affichage de la popup et ses boutons dans Plasma ;
 - pour `IDLE_ACTION=suspend` : le réveil du PC depuis la veille par le Wake-on-LAN.
+
+### Tests automatiques
+
+`tests/run.sh` vérifie le superviseur et `steamd-steamcfg` avec de faux gamescope, Steam, logind, systemctl, notify-send et powerprofilesctl, sans toucher au vrai Steam ni au système. Il dure environ 2 minutes. Pour ne lancer que certains tests : `tests/run.sh print login busy`.
 
 ## Critères de fin pour la v1
 

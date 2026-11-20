@@ -258,7 +258,8 @@ headless_pids() {
 headless_game() {
 	local p cmd
 	while read -r p; do
-		cmd=$(tr '\0' ' ' <"/proc/$p/cmdline" 2>/dev/null) || continue
+		# Le processus peut disparaître entre la liste et la lecture.
+		cmd=$({ tr '\0' ' ' <"/proc/$p/cmdline"; } 2>/dev/null) || continue
 		if [[ $cmd == *SteamLaunch*AppId=* ]]; then
 			cmd=${cmd#*AppId=}
 			echo "${cmd%% *}"

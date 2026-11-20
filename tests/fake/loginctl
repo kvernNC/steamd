@@ -1,0 +1,11 @@
+#!/bin/bash
+# Faux logind : une session graphique locale existe si $FAKE/session existe.
+case "$*" in
+*list-sessions*) [[ -e $FAKE/session ]] && echo "2 1000 user seat0 tty2" ;;
+*show-user*) [[ -e $FAKE/session ]] && echo 2 ;;
+*Class*) echo user ;;
+*Type*) echo wayland ;;
+*Remote*) echo no ;;
+*State*) echo active ;;
+esac
+exit 0

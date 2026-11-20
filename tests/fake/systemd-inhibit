@@ -1,0 +1,4 @@
+#!/bin/bash
+echo "INHIBIT" >>"$FAKE/events"
+while [[ $1 == --* ]]; do shift; done
+exec "$@"

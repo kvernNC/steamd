@@ -1,0 +1,4 @@
+#!/bin/bash
+f=$FAKE/ppd
+[[ -e $f ]] || echo balanced >"$f"
+case $1 in get) cat "$f" ;; set) echo "$2" >"$f" ;; esac
