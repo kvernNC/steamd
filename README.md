@@ -175,7 +175,7 @@ Tous les jeux lancés par le Steam headless reçoivent des réglages pensés pou
 | `FPS_LIMIT_TIMING=late` | late | Avec MangoHud : `late` donne la latence la plus basse, `early` des intervalles plus réguliers |
 | `STEAM_ENV=(...)` | vide | Variables supplémentaires (`NOM=valeur`) pour tous les jeux. Elles passent en dernier et remplacent les précédentes si le nom est le même |
 
-`steamd-launch --print` affiche l'environnement exact donné aux jeux. `steamd-doctor` vérifie MangoHud et l'accès à `/dev/ntsync`.
+`steamd-launch --print` affiche l'environnement exact donné aux jeux. `steamd-doctor` vérifie MangoHud et l'accès à `/dev/ntsync`. Il lit aussi le script de chaque version de Proton installée (Proton-CachyOS, GE-Proton, Proton officiel) pour indiquer quelle variable pilote ntsync. Pendant une partie, il confirme que le `wineserver` a bien ouvert `/dev/ntsync`.
 
 ### Réglages de Steam pilotés par `steamd`
 

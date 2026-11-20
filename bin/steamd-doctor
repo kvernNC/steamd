@@ -262,6 +262,42 @@ if [[ $stream_tuning == true ]]; then
 	else
 		info "ntsync indisponible avec ce noyau : Proton utilisera fsync/esync"
 	fi
+	# Versions de Proton installées : quelle variable pilote ntsync ?
+	declare -A seen=()
+	for d in /usr/share/steam/compatibilitytools.d/* \
+		"$HOME/.steam/root/compatibilitytools.d/"* \
+		"$HOME/.local/share/Steam/compatibilitytools.d/"* \
+		"${steam_root:-$HOME/.steam/steam}/steamapps/common/Proton"*; do
+		[[ -f $d/proton ]] || continue
+		rd=$(readlink -f "$d")
+		[[ -n ${seen[$rd]:-} ]] && continue
+		seen[$rd]=1
+		vars=$(grep -ohE '(PROTON|WINE)_[A-Z_]*NTSYNC[A-Z_]*' "$d/proton" 2>/dev/null | sort -u | paste -sd' ')
+		if [[ " $vars " == *" PROTON_USE_NTSYNC "* ]]; then
+			ok "$(basename "$d") : comprend PROTON_USE_NTSYNC"
+		elif [[ -n $vars ]]; then
+			# Séparer les variables qui activent de celles qui désactivent.
+			enable="" disable=""
+			for v in $vars; do
+				if [[ $v == *DISABLE* || $v == *_NO_* || $v == *NO_NTSYNC* ]]; then disable+=" $v"; else enable+=" $v"; fi
+			done
+			if [[ -n $enable ]]; then
+				warn "$(basename "$d") : ntsync activé par${enable}, pas par PROTON_USE_NTSYNC" "ajouter dans steamd.conf : STEAM_ENV=(\"${enable# }=1\")"
+			else
+				ok "$(basename "$d") : ntsync probablement actif par défaut (désactivable par${disable}, à ne pas définir ; confirmer pendant une partie)"
+			fi
+		else
+			info "$(basename "$d") : pas de variable ntsync dans son script (activation automatique, ou non géré)"
+		fi
+	done
+	# Pendant une partie : le wineserver a-t-il /dev/ntsync ouvert ?
+	for p in $(pgrep -u "$UID" -x wineserver); do
+		if find "/proc/$p/fd" -lname /dev/ntsync 2>/dev/null | grep -q .; then
+			ok "partie en cours : wineserver (pid $p) utilise ntsync"
+		else
+			info "partie en cours : wineserver (pid $p) n'utilise pas ntsync (fsync/esync)"
+		fi
+	done
 else
 	info "optimisations stream désactivées (STREAM_TUNING=false)"
 fi
