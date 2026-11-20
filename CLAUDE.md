@@ -156,6 +156,15 @@ Tout le reste n'a été testé qu'avec les faux de `tests/` : **à vérifier en 
      gamescope est relancé et la première connexion échoue (reconnexion
      30 à 60 s plus tard).
    - Règle 2 : ne jamais relancer gamescope pendant une partie.
+   - Client TV : TV Samsung avec Steam Link pour Tizen
+     (https://github.com/pebeto/tizen-steam-link), portage non officiel,
+     aucun script possible côté TV : reconnaissance par IP (bail DHCP fixe
+     sur le MikroTik). Limites de décodage inconnues (4K ? HEVC ?) : lire la
+     résolution et le codec négociés dans l'affichage des performances de
+     Steam Link sur la TV avant de fixer son profil.
+   - Forme envisagée (non implémentée) :
+     `CLIENT_PROFILES=("deck|1280x800|1280x800|90" "192.168.88.50|3840x2160|2560x1440|60")`
+     (identifiant ou IP | sortie | rendu | fréquence).
 
 ## Propositions faites, sans réponse de l'utilisateur
 
