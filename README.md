@@ -199,6 +199,8 @@ Pour voir l'état du Wi-Fi et des réglages :
 
 En option, `./wifi/wifi-tune.sh lock-ap` verrouille le réseau Wi-Fi actuel sur son point d'accès actuel. Le Deck ne cherche alors plus d'autre point d'accès en arrière-plan, ce qui supprime une autre source de pics. La contrepartie : si ce point d'accès disparaît (autre pièce, autre bâtiment), le Deck ne se reconnecte plus à ce réseau. Pour défaire le verrouillage : `unlock-ap`. C'est à réserver au réseau de la maison ; à éviter sur un réseau d'entreprise avec plusieurs bornes.
 
+**Ne pas laisser ouverts les paramètres Internet du mode jeu**, même cachés par l'écran de veille : Steam y relance un balayage de tous les canaux toutes les 15 s. Chaque balayage dure environ 5 s, avec des pics jusqu'à 170 ms, même AP verrouillé. Pour le vérifier : `iw event -t` affiche `scan started` aux moments des pics.
+
 Le plugin propose d'autres réglages que je n'ai pas repris, parce qu'ils peuvent empêcher la connexion ou n'aident pas le stream : bande forcée, DNS, IPv6, WPA2, changement de backend Wi-Fi, file d'attente CAKE.
 
 ## Prérequis manuels (une seule fois)
@@ -331,6 +333,8 @@ On colle ensuite la ligne dans `STEAM_SETTINGS`. `steamd-launch` l'applique avan
 - `GAME_POWER_PROFILE=performance` : le profil d'énergie de power-profiles-daemon passe à cette valeur, puis le profil précédent est restauré à la fin, même si le service s'arrête en pleine partie. Sans session ouverte, polkit exige une règle : `steamd-setup` installe `/etc/polkit-1/rules.d/60-steamd.rules`, et `steamd-setup --undo` la retire. `none` désactive ce réglage.
 
 Une partie lancée depuis le Steam du bureau n'est pas concernée.
+
+Le Steam de steamd a sa propre icône dans la zone de notification de Plasma : elle affiche le jeu en cours, et son menu permet de quitter le jeu (et donc le stream) depuis le bureau. « Quitter Steam » arrête steamd jusqu'au prochain `systemctl --user restart steamd` ou au prochain boot : systemd ne relance pas un Steam fermé proprement (`Restart=on-failure`).
 
 ### Cohabitation avec le Steam du bureau
 
