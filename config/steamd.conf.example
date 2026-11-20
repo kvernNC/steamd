@@ -26,16 +26,40 @@ STEAM_UI_ARG="-tenfoot"
 GAMESCOPE_EXTRA_ARGS=""
 STEAM_EXTRA_ARGS=""
 
-# --- Limite d'images par seconde (Steam headless seulement) -------------------
-# 0 = pas de limite. Mettre la même valeur que REFRESH : le GPU garde de la
-# marge pour la capture et l'encodage, et les images partent régulièrement.
-# Ne touche pas au Steam du bureau.
-FPS_LIMIT=0
+# --- Optimisation des jeux pour le stream (Steam headless seulement) -----------
+# Tout ce qui suit s'applique à tous les jeux lancés par steamd, jamais au
+# Steam du bureau. Les options de lancement d'un jeu dans Steam
+# (VAR=... %command%) restent prioritaires pour ce jeu.
+
+# Réglages de base pour le stream :
+#   DXVK_CONFIG=dxgi.maxFrameLatency=1;d3d9.maxFrameLatency=1
+#     une seule image préparée d'avance au lieu de 3 : moins de latence,
+#     un peu moins d'images par seconde quand le processeur est limitant
+#   PROTON_USE_NTSYNC=1
+#     synchronisation ntsync (moins de micro-saccades), ignorée si la version
+#     de Proton ne la gère pas
+STREAM_TUNING=true
+
+# Limite d'images par seconde :
+#   auto  (défaut) égale à REFRESH, la fréquence de capture
+#   0     pas de limite
+#   N     par exemple 45 avec REFRESH=90 pour un jeu lourd : un rythme stable
+#         à un sous-multiple de la capture est plus fluide qu'un rythme
+#         irrégulier proche de REFRESH
+FPS_LIMIT=auto
 #   mangohud  (défaut) couche Vulkan MangoHud, invisible (no_display) : couvre
 #             les jeux natifs et ceux sous Proton. Paquet mangohud.
 #   dxvk      limiteurs intégrés de DXVK et VKD3D-Proton, sans MangoHud
 #             (jeux Windows sous Proton seulement).
 FPS_LIMIT_METHOD=mangohud
+# Avec MangoHud : late = latence la plus basse, early = intervalles plus réguliers.
+FPS_LIMIT_TIMING=late
+
+# Variables d'environnement supplémentaires pour tous les jeux, NOM=valeur.
+# Elles passent en dernier et remplacent celles ci-dessus si le nom est le même.
+STEAM_ENV=(
+	# "DXVK_HUD=fps"
+)
 
 # --- Réglages de Steam pilotés par steamd ---------------------------------------
 # Écrits dans les fichiers de Steam juste avant chaque lancement de Steam

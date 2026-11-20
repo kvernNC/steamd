@@ -60,8 +60,11 @@ STEAM_CAPTURE=pipewire-dmabuf
 STEAM_UI_ARG="-tenfoot"
 GAMESCOPE_EXTRA_ARGS=""
 STEAM_EXTRA_ARGS=""
-FPS_LIMIT=0
+FPS_LIMIT=auto
 FPS_LIMIT_METHOD=mangohud
+FPS_LIMIT_TIMING=late
+STREAM_TUNING=true
+STEAM_ENV=()
 STEAM_SETTINGS=()
 DESKTOP_SESSION_POLICY=yield
 HANDOVER_DELAY=15
@@ -90,6 +93,7 @@ is_uint() { [[ $1 =~ ^[0-9]+$ ]]; }
 
 validate_conf() {
 	local v
+	[[ $FPS_LIMIT == auto ]] && FPS_LIMIT=$REFRESH
 	for v in WIDTH HEIGHT REFRESH POLL_INTERVAL RESTART_DELAY STOP_TIMEOUT HANDOVER_DELAY IDLE_TIMEOUT FPS_LIMIT; do
 		is_uint "${!v}" || die $EXIT_CONFIG "$v doit être un entier (valeur : '${!v}')"
 	done
@@ -118,7 +122,18 @@ validate_conf() {
 		log "attention : MangoHud absent (sudo pacman -S mangohud), limite d'images par seconde via DXVK et VKD3D-Proton seulement (jeux Windows sous Proton)"
 		FPS_LIMIT_METHOD=dxvk
 	fi
+	case $FPS_LIMIT_TIMING in
+	late | early) ;;
+	*) die $EXIT_CONFIG "FPS_LIMIT_TIMING doit valoir late ou early (valeur : '$FPS_LIMIT_TIMING')" ;;
+	esac
+	case $STREAM_TUNING in
+	true | false) ;;
+	*) die $EXIT_CONFIG "STREAM_TUNING doit valoir true ou false (valeur : '$STREAM_TUNING')" ;;
+	esac
 	local s
+	for s in "${STEAM_ENV[@]}"; do
+		[[ $s =~ ^[A-Za-z_][A-Za-z0-9_]*= ]] || die $EXIT_CONFIG "STEAM_ENV : '$s' n'est pas de la forme NOM=valeur"
+	done
 	for s in "${STEAM_SETTINGS[@]}"; do
 		[[ $s =~ ^[^:=]+:[^=]+=.*$ ]] || die $EXIT_CONFIG "STEAM_SETTINGS : réglage mal formé '$s' (attendu FICHIER:CLÉ=VALEUR)"
 	done
@@ -147,17 +162,28 @@ build_command() {
 		--backend headless --steam
 		"${gs_extra[@]}"
 		--)
-	# Limite d'images par seconde : variables d'environnement données à Steam
-	# headless seulement (et donc à ses jeux), pas à gamescope ni au bureau.
-	# mangohud : couche Vulkan, couvre les jeux natifs Vulkan et ceux sous
-	# Proton (DXVK et VKD3D-Proton passent par Vulkan). dxvk : limiteurs
-	# intégrés de DXVK et VKD3D-Proton, sans MangoHud.
+	# Environnement des jeux : donné à Steam headless seulement (et donc à
+	# tous ses jeux), pas à gamescope ni au Steam du bureau. Les options de
+	# lancement d'un jeu dans Steam (VAR=... %command%) restent prioritaires.
+	local -a envs=()
+	if [[ $STREAM_TUNING == true ]]; then
+		# Une seule image préparée d'avance au lieu de 3 : moins de latence.
+		envs+=("DXVK_CONFIG=dxgi.maxFrameLatency=1;d3d9.maxFrameLatency=1")
+		# Synchronisation ntsync (noyau >= 6.14), ignorée si Proton ne la gère pas.
+		envs+=("PROTON_USE_NTSYNC=1")
+	fi
+	# Limite d'images par seconde. mangohud : couche Vulkan, couvre les jeux
+	# natifs Vulkan et ceux sous Proton (DXVK et VKD3D-Proton passent par
+	# Vulkan). dxvk : limiteurs intégrés de DXVK et VKD3D-Proton.
 	if ((FPS_LIMIT > 0)); then
 		case $FPS_LIMIT_METHOD in
-		mangohud) CMD+=(env MANGOHUD=1 "MANGOHUD_CONFIG=fps_limit=$FPS_LIMIT,no_display") ;;
-		dxvk) CMD+=(env "DXVK_FRAME_RATE=$FPS_LIMIT" "VKD3D_FRAME_RATE=$FPS_LIMIT") ;;
+		mangohud) envs+=(MANGOHUD=1 "MANGOHUD_CONFIG=fps_limit=$FPS_LIMIT,fps_limit_method=$FPS_LIMIT_TIMING,no_display") ;;
+		dxvk) envs+=("DXVK_FRAME_RATE=$FPS_LIMIT" "VKD3D_FRAME_RATE=$FPS_LIMIT") ;;
 		esac
 	fi
+	# Variables de l'utilisateur en dernier : elles l'emportent.
+	envs+=("${STEAM_ENV[@]}")
+	((${#envs[@]} == 0)) || CMD+=(env "${envs[@]}")
 	CMD+=("$STEAM_BIN" "${steam_ui[@]}")
 	case $STEAM_CAPTURE in
 	pipewire-dmabuf) CMD+=(-pipewire-dmabuf) ;;

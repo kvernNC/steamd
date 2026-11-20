@@ -130,8 +130,11 @@ STEAM_CAPTURE=pipewire-dmabuf   # pipewire-dmabuf | pipewire | none
 STEAM_UI_ARG="-tenfoot"         # ou -gamepadui
 GAMESCOPE_EXTRA_ARGS=""
 STEAM_EXTRA_ARGS=""
-FPS_LIMIT=0                     # ex. 90 : limite des jeux lancés par Steam headless
+STREAM_TUNING=true              # optimisations stream pour tous les jeux de Steam headless
+FPS_LIMIT=auto                  # auto (= REFRESH) | 0 | N
 FPS_LIMIT_METHOD=mangohud       # mangohud | dxvk
+FPS_LIMIT_TIMING=late           # late (latence) | early (régularité), avec MangoHud
+STEAM_ENV=()                    # variables supplémentaires pour tous les jeux
 STEAM_SETTINGS=()               # réglages de Steam écrits avant chaque lancement
 DESKTOP_SESSION_POLICY=yield    # yield | takeover
 HANDOVER_DELAY=15               # après une partie, délai avant de rendre Steam au bureau
@@ -160,9 +163,19 @@ Après une modification :
 systemctl --user restart steamd
 ```
 
-### Limite d'images par seconde
+### Jeux optimisés pour le stream
 
-`FPS_LIMIT=90`, avec la même valeur que `REFRESH`, plafonne les jeux lancés par le Steam headless. Le GPU garde ainsi de la marge pour la capture et l'encodage, et les images partent à intervalles réguliers. Cette limite ne touche pas au Steam du bureau. Par défaut, elle passe par MangoHud, invisible à l'écran (paquet `mangohud`), qui couvre les jeux natifs comme ceux sous Proton. Sans MangoHud, `steamd` utilise les limiteurs intégrés de DXVK et VKD3D-Proton.
+Tous les jeux lancés par le Steam headless reçoivent des réglages pensés pour le stream. Ils passent par l'environnement de Steam headless, donc **jamais au Steam du bureau**. Les options de lancement d'un jeu dans Steam (`VAR=... %command%`) restent prioritaires pour ce jeu.
+
+| Réglage | Par défaut | Effet |
+|---|---|---|
+| `STREAM_TUNING=true` | actif | `DXVK_CONFIG=dxgi.maxFrameLatency=1;d3d9.maxFrameLatency=1` : une image préparée d'avance au lieu de 3, donc moins de latence. `PROTON_USE_NTSYNC=1` : synchronisation ntsync, moins de micro-saccades, ignorée si la version de Proton ne la gère pas |
+| `FPS_LIMIT=auto` | = `REFRESH` | Plafond calé sur la fréquence de capture : le GPU garde de la marge pour capturer et encoder, et les images partent régulièrement. Pour un jeu lourd qui ne tient pas `REFRESH`, un sous-multiple (45 pour 90) est plus fluide qu'un rythme irrégulier |
+| `FPS_LIMIT_METHOD=mangohud` | MangoHud | Couche Vulkan invisible (paquet `mangohud`), qui couvre les jeux natifs comme ceux sous Proton. `dxvk` : limiteurs de DXVK et VKD3D-Proton, sans MangoHud. Repli automatique sur `dxvk` si MangoHud est absent |
+| `FPS_LIMIT_TIMING=late` | late | Avec MangoHud : `late` donne la latence la plus basse, `early` des intervalles plus réguliers |
+| `STEAM_ENV=(...)` | vide | Variables supplémentaires (`NOM=valeur`) pour tous les jeux. Elles passent en dernier et remplacent les précédentes si le nom est le même |
+
+`steamd-launch --print` affiche l'environnement exact donné aux jeux. `steamd-doctor` vérifie MangoHud et l'accès à `/dev/ntsync`.
 
 ### Réglages de Steam pilotés par `steamd`
 
@@ -343,7 +356,8 @@ Tout le contenu du périmètre v1 est écrit. Les scripts passent `shellcheck`. 
 - test 2 (uinput et PipeWire sans session) ;
 - le bon déclenchement de `steamd-session-hook` par Plasma 6 (`graphical-session-pre.target` puis `graphical-session.target`) ;
 - l'arrêt propre via `steam -shutdown` sans affichage ;
-- la limite d'images par seconde via MangoHud dans les jeux lancés par Steam headless ;
+- la limite d'images par seconde via MangoHud et les réglages `STREAM_TUNING` dans les jeux lancés par Steam headless (perte d'images et latence d'affichage, à comparer avec `STREAM_TUNING=false`) ;
+- la prise en charge de `PROTON_USE_NTSYNC` par la version de Proton utilisée ;
 - les noms de clés des options Remote Play, à relever avec `steamd-steamcfg diff` ;
 - la détection d'une partie via `reaper SteamLaunch AppId=` sur la version de Steam installée ;
 - le lancement du Steam du bureau depuis le service (environnement graphique importé par Plasma), l'affichage de la popup et ses boutons dans Plasma ;
