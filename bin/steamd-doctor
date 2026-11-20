@@ -71,7 +71,9 @@ check "steamd-profiled.service actif (profils, veille et énergie pendant les pa
 if [[ ${GAME_POWER_PROFILE:-performance} != none ]]; then
     if command -v powerprofilesctl >/dev/null; then
         ok "power-profiles-daemon présent (GAME_POWER_PROFILE=${GAME_POWER_PROFILE:-performance}, actuel : $(powerprofilesctl get 2>/dev/null || echo ?))"
-        check "règle polkit de steamd (profil d'énergie sans session)" "steamd-setup" test -r /etc/polkit-1/rules.d/60-steamd.rules
+        # /etc/polkit-1/rules.d est en général illisible pour l'utilisateur : trace laissée par steamd-setup
+        check "règle polkit de steamd (profil d'énergie sans session)" "steamd-setup (installe /etc/polkit-1/rules.d/60-steamd.rules)" \
+            bash -c '[[ -e /etc/polkit-1/rules.d/60-steamd.rules || -e $1 ]]' _ "${XDG_STATE_HOME:-$HOME/.local/state}/steamd/polkit-installed"
     else
         info "powerprofilesctl absent : GAME_POWER_PROFILE sans effet (sudo pacman -S power-profiles-daemon)"
     fi
