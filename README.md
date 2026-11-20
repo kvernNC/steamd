@@ -215,7 +215,7 @@ Dans la session de bureau, le Steam du bureau peut rester ouvert :
 6. Appairer le Deck dans cette fenêtre. En headless, le PIN ne peut pas être saisi, car aucun écran n'affiche la demande.
 7. Quitter complètement ce client, puis `systemctl --user start steamd`.
 
-Côté bureau : désactiver Remote Play (Paramètres > Remote Play) et les transferts de jeux sur le réseau local (Paramètres > Téléchargements), puis relancer Steam. Les deux clients visent les mêmes ports (UDP 27036, TCP 27036-27037), et le premier démarré les garde. Dans ce cas, le Deck ne voit pas steamd. `steamd-doctor` vérifie à qui appartiennent ces ports.
+Côté bureau : désactiver Remote Play (Paramètres > Remote Play) et les transferts de jeux sur le réseau local (Paramètres > Téléchargements), puis relancer Steam. Les deux clients visent les mêmes ports (UDP 27036, TCP 27036-27037), et le premier démarré les garde (même Remote Play coupé). Au premier démarrage après le boot, `steamd-launch` ferme donc le Steam du bureau s'il tourne déjà (`DESKTOP_STEAM=keep` pour le garder) ; relancé ensuite, il n'est plus touché. `steamd-doctor` vérifie à qui appartiennent ces ports.
 
 ## Plan de test
 

@@ -53,5 +53,6 @@ AUDIO_ISOLATE=false             # true : sortie audio dédiée, le stream n'a pl
 #AUDIO_SINK=steamd              # nom de cette sortie
 VAAPI_STRICT_RC=false           # true (recommandé sur GPU AMD, avec ENCODER=hardware) : CBR et tampon d’une image, comme Sunshine
 NETWORK_WAIT=90                 # au boot, attente du réseau avant Steam (s) ; 0 = pas d'attente
+DESKTOP_STEAM=quit              # quit : ferme au boot le Steam du bureau, qui prendrait le port 27036 ; keep : le laisser
 # HOME dédié du client Steam de steamd (distinct du Steam du bureau)
 #STEAMD_HOME="$HOME/.local/share/steamd-home"

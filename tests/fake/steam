@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# Faux steam : seul -shutdown est appelé directement (le Steam du bureau, selon HOME)
+echo "steam $* HOME=$HOME" >>"$FAKE/steam.log"
+[[ $1 == -shutdown ]] && pkill -f "$HOME/.local/share/Steam/"
+true

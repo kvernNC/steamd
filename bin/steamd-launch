@@ -18,7 +18,7 @@ CLIENT_PROFILES=()
 STREAM_TUNING=true FPS_LIMIT=auto FPS_LIMIT_METHOD=mangohud FPS_LIMIT_TIMING=late
 STEAM_ENV=()
 STEAM_SETTINGS=()
-NETWORK_WAIT=90
+NETWORK_WAIT=90 DESKTOP_STEAM=quit
 STEAMD_HOME="${XDG_DATA_HOME:-$HOME/.local/share}/steamd-home"
 # shellcheck source=/dev/null
 [[ -r $CONF ]] && source "$CONF"
@@ -168,6 +168,11 @@ for f in "${XDG_DATA_HOME:-$HOME/.local/share}/steamd/libsteamd-vaapi.so" /usr/l
     [[ -r $f ]] && { vaapi_lib=$f; break; }
 done
 
+# Environnement du Steam du bureau, pour le fermer après le changement de HOME
+DESKTOP_HOME=$HOME
+desktop_env=(env -u DISPLAY -u WAYLAND_DISPLAY -u XDG_CONFIG_HOME -u XDG_DATA_HOME -u XDG_CACHE_HOME HOME="$HOME")
+for v in XDG_CONFIG_HOME XDG_DATA_HOME XDG_CACHE_HOME; do [[ -n ${!v:-} ]] && desktop_env+=("$v=${!v}"); done
+
 mkdir -p "$STEAMD_HOME"
 export HOME=$STEAMD_HOME STEAMD_HOME
 export XDG_CONFIG_HOME=$HOME/.config XDG_DATA_HOME=$HOME/.local/share XDG_CACHE_HOME=$HOME/.cache
@@ -247,13 +252,32 @@ check_ports() {
     held=$(ss -Hulnp '( sport = :27036 )' 2>/dev/null | grep -o 'pid=[0-9]*' | cut -d= -f2 | sort -u) || return 0
     [[ -n $held ]] || return 0
     log "port UDP 27036 déjà tenu par $(ps -o pid=,args= -p "${held//$'\n'/,}" 2>/dev/null | cut -c1-80 | paste -sd';')"
-    log "→ désactiver Remote Play dans le Steam du bureau, puis systemctl --user restart steamd"
+    log "→ fermer le Steam du bureau, puis systemctl --user restart steamd"
+}
+
+# Steam du bureau lancé avant steamd (autologin, session restaurée) : il garde le port 27036
+# même Remote Play coupé. Fermé au premier démarrage après le boot seulement ($RUNDIR est
+# vidé au boot) : un Steam du bureau relancé ensuite à la main n'est plus touché.
+quit_desktop_steam() {
+    local mark=$RUNDIR/desktop-steam-checked pat="$DESKTOP_HOME/.local/share/Steam/" i
+    [[ $DESKTOP_STEAM == quit && ! -e $mark ]] || return 0
+    mkdir -p "$RUNDIR" && : >"$mark"
+    pgrep -u "$UID" -f "$pat" >/dev/null || return 0
+    log "Steam du bureau lancé avant steamd : fermeture (DESKTOP_STEAM=keep pour le garder)"
+    "${desktop_env[@]}" steam -shutdown >/dev/null 2>&1 || true
+    for ((i = 0; i < 30; i++)); do
+        pgrep -u "$UID" -f "$pat" >/dev/null || return 0
+        ((i == 20)) && pkill -u "$UID" -f "$pat"
+        sleep 1
+    done
+    log "Steam du bureau toujours là, le port 27036 risque d'être pris"
 }
 
 check_profiles
 set_encoder
 apply_settings
 wait_network
+quit_desktop_steam
 check_ports
 
 active=$(cat "$PROFILE_FILE" 2>/dev/null || echo default)

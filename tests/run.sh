@@ -40,7 +40,7 @@ wait_for() {
 # Conf de test : STEAMD_HOME dans le dossier temporaire, puis les lignes données
 reset() {
     pkill -f "$FAKE" 2>/dev/null
-    rm -rf "$FAKE"/{run,cg,events,gamescope.out,sinks,default-sink,pactl.log,pactl-ko,power,peers,steampid,inactive}
+    rm -rf "$FAKE"/{run,cg,events,gamescope.out,sinks,default-sink,pactl.log,pactl-ko,power,peers,steampid,inactive,steam.log}
     mkdir -p "$HOME/.config/steamd" "$XDG_RUNTIME_DIR/steamd" "$FAKE/cg/steamd" "$STEAMDIR/userdata/42/config"
     printf '"UserLocalConfigStore"\n{\n\t"Streaming"\n\t{\n\t\t"EnableHardwareEncoding"\t\t"0"\n\t}\n}\n' \
         >"$STEAMDIR/userdata/42/config/localconfig.vdf"
@@ -274,6 +274,23 @@ t_game() {
     check "GAME_POWER_PROFILE invalide : code 2" '[[ $? == 2 ]]'
 }
 
+t_desktop() {
+    echo "== Steam du bureau fermé au premier démarrage"
+    reset "NETWORK_WAIT=0"
+    mkdir -p "$HOME/.local/share/Steam/steamrt64"
+    cp "$(command -v sleep)" "$HOME/.local/share/Steam/steamrt64/steam"
+    "$HOME/.local/share/Steam/steamrt64/steam" 300 &
+    wait_for 'pgrep -f "$HOME/.local/share/Steam/" >/dev/null' 3
+    launch
+    check "fermé par steam -shutdown avec le HOME du bureau" 'grep -q "^steam -shutdown HOME=$HOME$" "$FAKE/steam.log"'
+    check "plus de Steam du bureau" 'wait_for "! pgrep -f \"$HOME/.local/share/Steam/\" >/dev/null" 3'
+    "$HOME/.local/share/Steam/steamrt64/steam" 300 &
+    launch
+    check "relancé à la main : laissé ensuite" 'pgrep -f "$HOME/.local/share/Steam/" >/dev/null'
+    check "un seul -shutdown" '[[ $(wc -l <"$FAKE/steam.log") == 1 ]]'
+    kill %% 2>/dev/null
+}
+
 t_vaapi() {
     echo "== libsteamd-vaapi (fausse libva, chargée en RTLD_LOCAL comme dans Steam)"
     local inc=${VA_INCLUDE:-/usr/include} b=$FAKE/va
@@ -300,7 +317,7 @@ t_vaapi() {
     check "HRD d'une image à 90 i/s (fréquence transmise)" '[[ $(grep -c "pilote HRD=200000 plein=150000" "$b/avec.out") == 2 ]]'
 }
 
-ALL=(launch config profiles tuning encoder vaapi_env audio steamcfg profiled game vaapi)
+ALL=(launch config profiles tuning encoder vaapi_env audio steamcfg profiled game desktop vaapi)
 for t in "${@:-${ALL[@]}}"; do
     if declare -F "t_$t" >/dev/null; then "t_$t"; else echo "test inconnu : $t (${ALL[*]})"; FAIL=$((FAIL + 1)); fi
 done
