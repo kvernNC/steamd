@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+f=$FAKE/power; [[ -f $f ]] || echo balanced >"$f"
+case $1 in
+    get) cat "$f" ;;
+    set) echo "$2" >"$f"; echo "POWER $2" >>"$FAKE/events" ;;
+esac

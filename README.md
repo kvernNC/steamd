@@ -71,6 +71,10 @@ steamd/
 │   └── wake-host.sh            # réveil depuis le Deck (LAN ou VPN via SSH)
 ├── wifi/
 │   └── wifi-tune.sh            # réglages Wi-Fi anti-pics, Deck et PC (sans Decky)
+├── tests/
+│   ├── run.sh                  # tests avec des faux (gamescope, systemctl, ss, pactl…)
+│   ├── fake/                   # faux outils
+│   └── vaapi/                  # fausse libva pour libsteamd-vaapi
 ├── install.sh
 └── uninstall.sh
 ```
@@ -345,6 +349,29 @@ journalctl --user -u steamd -u steamd-profiled -f
 - `options-remoteplay` : relevé guidé des clés des options Remote Play du client steamd. Il arrête steamd, prend un snapshot, ouvre `steamd-launch --setup`, fait le diff, puis relance steamd. Le Steam du bureau n'est pas touché.
 - `clients` : suivi en direct des IP connectées au Steam de steamd et du profil choisi.
 - `journal-stream` : extrait du journal de streaming (client, résolution, codec, HDR).
+
+### Tests
+
+```bash
+tests/run.sh                    # tous les tests, quelques secondes
+tests/run.sh profiled game      # un sous-ensemble : launch config profiles tuning encoder
+                                # vaapi_env audio steamcfg profiled game vaapi
+```
+
+Les tests utilisent de faux `gamescope`, `systemctl`, `ss`, `pactl`, `systemd-inhibit` et `powerprofilesctl` (`tests/fake/`). Tout se passe dans un dossier temporaire, sans toucher au vrai Steam ni au système. Ils couvrent :
+
+- la commande gamescope ;
+- la validation de la conf (code 2) ;
+- les profils par client ;
+- l'environnement des jeux ;
+- `ENCODER` et `STEAM_SETTINGS` ;
+- `AUDIO_ISOLATE` ;
+- `steamd-steamcfg`, y compris l'écriture permise quand seul le Steam du bureau tourne ;
+- `steamd-profiled` : bascule de profil, attente de la fin de partie, veille et énergie.
+
+Le test `vaapi` compile `src/steamd-vaapi.c` et le fait tourner contre une fausse libva chargée en `RTLD_LOCAL`, comme dans Steam. Il demande `cc` et les en-têtes libva : le paquet `libva`, ou `VA_INCLUDE=dossier`. Sans eux, il est sauté.
+
+Ce qui reste à valider sur la vraie machine n'est pas couvert : Steam lui-même, la détection des clients par les sockets, la règle polkit, le HDR.
 
 ### Désinstallation
 

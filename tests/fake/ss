@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+# Faux ss : un serveur de Valve, une socket d'un autre Steam (bureau), et les
+# clients de $FAKE/peers sur le pid de $FAKE/steampid
+sp=$(cat "$FAKE/steampid" 2>/dev/null || echo 1)
+echo "udp 0 0 192.168.88.88:27031 162.254.195.71:27017 users:((\"steam\",pid=$sp,fd=80))"
+echo "tcp 0 0 192.168.88.88:41000 192.168.88.77:27036 users:((\"steam\",pid=999999,fd=81))"
+[[ -r $FAKE/peers ]] && while read -r ip; do
+    [[ -n $ip ]] && echo "udp 0 0 192.168.88.88:27031 $ip:55000 users:((\"steam\",pid=$sp,fd=90))"
+done <"$FAKE/peers"
+true

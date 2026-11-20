@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+# Faux pactl : sorties dans $FAKE/sinks ; une sortie chargée devient la sortie
+# par défaut (pire cas). $FAKE/pactl-ko : PipeWire injoignable.
+[[ -e $FAKE/pactl-ko ]] && exit 1
+s=$FAKE/sinks d=$FAKE/default-sink
+touch "$s"; [[ -f $d ]] || echo speakers >"$d"
+echo "pactl $*" >>"$FAKE/pactl.log"
+case "$1 $2" in
+    "list short")
+        [[ $3 == sinks ]] && awk '{print NR "\t" $1 "\tmodule\ts16le"}' "$s"
+        [[ $3 == modules ]] && awk '{print NR "\tmodule-null-sink\tsink_name=" $1 " sink_properties=device.description=" $1}' "$s"
+        ;;
+    "get-default-sink ") cat "$d" ;;
+    "set-default-sink "*) echo "$2" >"$d" ;;
+    "load-module module-null-sink") n=${3#sink_name=}; echo "$n" >>"$s"; echo "$n" >"$d"; echo 42 ;;
+    "unload-module "*) sed -i "${2}d" "$s" ;;
+esac
+true

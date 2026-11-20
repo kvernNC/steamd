@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+# Faux systemctl --user : steamd.service actif sauf si $FAKE/inactive existe
+args=" $* "
+case $args in
+    *" show "*ControlGroup*) echo /steamd ;;
+    *" is-active "*) [[ ! -e $FAKE/inactive ]] ;;
+    *" restart "*) echo "RESTART $(cat "$XDG_RUNTIME_DIR/steamd/profile" 2>/dev/null || echo default)" >>"$FAKE/events" ;;
+    *) echo "SYSTEMCTL $*" >>"$FAKE/events" ;;
+esac
