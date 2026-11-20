@@ -89,7 +89,7 @@ fi
 
 # ---------------------------------------------------------------------------
 section "Installation steamd"
-for f in steamd-launch steamd-session-hook steamd-doctor steamd-steamcfg; do
+for f in steamd-launch steamd-session-hook steamd-doctor steamd-steamcfg steamd-probe; do
 	if [[ -x $BIN_DIR/$f ]]; then ok "$BIN_DIR/$f"; else ko "$BIN_DIR/$f absent" "relancer ./install.sh"; fi
 done
 for u in steamd.service steamd-session-hook.service; do

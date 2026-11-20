@@ -76,7 +76,7 @@ systemctl --user reset-failed steamd.service steamd-session-hook.service 2>/dev/
 
 step "Fichiers utilisateur"
 for f in "$UNIT_DIR/steamd.service" "$UNIT_DIR/steamd-session-hook.service" \
-	"$BIN_DIR/steamd-launch" "$BIN_DIR/steamd-doctor" "$BIN_DIR/steamd-session-hook" "$BIN_DIR/steamd-steamcfg" \
+	"$BIN_DIR/steamd-launch" "$BIN_DIR/steamd-doctor" "$BIN_DIR/steamd-session-hook" "$BIN_DIR/steamd-steamcfg" "$BIN_DIR/steamd-probe" \
 	"$APP_DIR/steamd-handover.desktop"; do
 	if [[ -e $f ]]; then
 		rm -f "$f"

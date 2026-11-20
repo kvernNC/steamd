@@ -1,0 +1,249 @@
+#!/usr/bin/env bash
+# steamd-probe : relevés sur la vraie machine, pour gagner du temps.
+# Chaque commande écrit aussi son résultat dans un fichier texte à transmettre
+# tel quel (à Claude ou dans une issue).
+#
+#   steamd-probe rapport            rapport complet : versions, diagnostic,
+#                                   capacités de gamescope, journaux
+#   steamd-probe options-remoteplay relevé guidé des clés des options
+#                                   Remote Play de Steam (snapshot/diff)
+#   steamd-probe clients            suivi en direct des IP connectées au Steam
+#                                   headless et du profil choisi (Ctrl+C)
+#   steamd-probe journal-stream     extrait du journal de streaming de Steam
+#                                   (client, résolution, codec, HDR)
+set -uo pipefail
+
+USER=${USER:-$(id -un)}
+BIN_DIR=$(dirname -- "$(readlink -f -- "${BASH_SOURCE[0]}")")
+STAMP=$(date +%Y%m%d-%H%M%S)
+OUT_DIR=${STEAMD_PROBE_DIR:-$HOME}
+
+steam_root() {
+	local d
+	for d in "$HOME/.steam/steam" "$HOME/.local/share/Steam"; do
+		[[ -d $d ]] && {
+			readlink -f "$d"
+			return 0
+		}
+	done
+	return 1
+}
+
+section() { printf '\n===== %s =====\n' "$*"; }
+run() {
+	printf '$ %s\n' "$*"
+	"$@" 2>&1 || printf '(code %s)\n' "$?"
+}
+ask() {
+	local reply
+	printf '\n%s ' "$1" >/dev/tty
+	read -r reply </dev/tty
+	printf '%s' "$reply"
+}
+steam_running() { pgrep -u "$UID" -x steam >/dev/null; }
+
+# --- rapport -------------------------------------------------------------------
+
+cmd_rapport() {
+	local out="$OUT_DIR/steamd-rapport-$STAMP.txt" root
+	root=$(steam_root || true)
+	{
+		echo "steamd-probe rapport, $(date '+%F %T'), utilisateur $USER"
+
+		section "Système"
+		run uname -a
+		[[ -r /etc/os-release ]] && grep -E '^(PRETTY_NAME|VERSION_ID|BUILD_ID)=' /etc/os-release
+		if command -v pacman >/dev/null; then
+			run pacman -Q gamescope steam mesa vulkan-radeon libva-mesa-driver mangohud \
+				power-profiles-daemon libnotify python iw networkmanager proton-cachyos 2>&1
+		fi
+		run lspci -nnk -d ::0300
+		[[ -n $root && -r $root/package/steam_client_ubuntu12.manifest ]] &&
+			grep -m1 -E '"version"' "$root/package/steam_client_ubuntu12.manifest" | sed 's/^/version du client Steam : /'
+
+		section "gamescope : options utiles (headless, HDR, PipeWire, résolution)"
+		run gamescope --version
+		gamescope --help 2>&1 | grep -iE 'headless|hdr|pipewire|backend|refresh|nested|output-width|-W,|-w,|fsr|filter|framerate|fps' | head -60
+		if command -v gamescopectl >/dev/null; then
+			section "gamescopectl (changement à chaud ?)"
+			run timeout 5 gamescopectl --help
+			# Avec un gamescope en cours : liste des variables modifiables.
+			GAMESCOPE_WAYLAND_DISPLAY=${GAMESCOPE_WAYLAND_DISPLAY:-gamescope-0} timeout 5 gamescopectl 2>&1 | head -80
+		else
+			section "gamescopectl"
+			echo "absent"
+		fi
+
+		section "steamd"
+		run "$BIN_DIR/steamd-launch" --status
+		run "$BIN_DIR/steamd-launch" --print
+		run "$BIN_DIR/steamd-launch" --clients
+		run systemctl --user status steamd.service steamd-session-hook.service --no-pager -l
+
+		section "steamd-doctor"
+		"$BIN_DIR/steamd-doctor" -n 0 2>&1 | sed 's/\x1b\[[0-9;]*m//g'
+
+		section "Couches Vulkan implicites"
+		ls -1 /usr/share/vulkan/implicit_layer.d/ "$HOME/.local/share/vulkan/implicit_layer.d/" 2>/dev/null
+
+		section "Outils de compatibilité installés"
+		ls -1d /usr/share/steam/compatibilitytools.d/* "$HOME/.steam/root/compatibilitytools.d/"* \
+			"${root:-/nonexistent}/steamapps/common/Proton"* 2>/dev/null
+
+		section "Partie en cours (si une partie tourne)"
+		pgrep -af 'SteamLaunch AppId=' | cut -c1-200 || echo "aucune"
+		local p
+		for p in $(pgrep -u "$UID" -x wineserver); do
+			echo "wineserver $p : $(find "/proc/$p/fd" -lname /dev/ntsync 2>/dev/null | grep -q . && echo 'ntsync utilisé' || echo 'ntsync non utilisé')"
+		done
+		run systemd-inhibit --list --no-pager
+		command -v powerprofilesctl >/dev/null && run powerprofilesctl get
+
+		section "Wi-Fi"
+		local w
+		for w in /sys/class/net/*/wireless; do
+			[[ -e $w ]] || continue
+			w=$(basename "$(dirname "$w")")
+			run iw dev "$w" get power_save
+			iw dev "$w" link 2>&1 | sed -n 's/^\t//p'
+		done
+
+		section "Journal de streaming de Steam (extrait)"
+		cmd_journal_stream_raw
+
+		section "Journal steamd (200 dernières lignes)"
+		journalctl --user -u steamd.service -u steamd-session-hook.service -n 200 --no-pager 2>&1
+	} >"$out" 2>&1
+	echo "Rapport écrit : $out"
+	echo "($(wc -l <"$out") lignes ; à transmettre tel quel.)"
+}
+
+# --- journal-stream --------------------------------------------------------------
+
+cmd_journal_stream_raw() {
+	local root f
+	root=$(steam_root) || {
+		echo "dossier Steam introuvable"
+		return 0
+	}
+	for f in "$root/logs/streaming_log.txt" "$root/logs/remote_connections.txt" "$root/logs/console_log.txt"; do
+		[[ -r $f ]] || continue
+		echo "--- $f (lignes pertinentes, 120 dernières)"
+		grep -aiE 'client|resolution|[0-9]{3,4}x[0-9]{3,4}|codec|hevc|h264|av1|hdr|10.?bit|refresh|fps|framerate|stream|connect|remote ?play|capture|encoder|decoder' "$f" | tail -120
+	done
+}
+
+cmd_journal_stream() {
+	local out="$OUT_DIR/steamd-journal-stream-$STAMP.txt"
+	cmd_journal_stream_raw | tee "$out"
+	echo
+	echo "Extrait écrit : $out"
+	echo "Astuce : streame depuis le Deck, puis depuis la TV, et relance cette commande après chacun."
+}
+
+# --- clients -----------------------------------------------------------------------
+
+cmd_clients() {
+	local out="$OUT_DIR/steamd-clients-$STAMP.txt"
+	echo "Suivi des connexions (Ctrl+C pour arrêter), copie dans $out"
+	echo "Connecte un client (Deck, TV) : son IP doit apparaître ci-dessous."
+	trap 'echo; echo "Copie : $out"; exit 0' INT
+	local last=""
+	while :; do
+		local now
+		now=$("$BIN_DIR/steamd-launch" --clients 2>&1)
+		if [[ $now != "$last" ]]; then
+			printf '\n[%s]\n%s\n' "$(date +%T)" "$now" | tee -a "$out"
+			last=$now
+		fi
+		sleep 2
+	done
+}
+
+# --- options-remoteplay ------------------------------------------------------------
+
+cmd_options_remoteplay() {
+	local out="$OUT_DIR/steamd-options-remoteplay-$STAMP.txt" was_active=false
+	command -v python3 >/dev/null || {
+		echo "python3 requis (sudo pacman -S python)"
+		exit 1
+	}
+	cat <<EOF
+Relevé guidé des options Remote Play de Steam.
+
+Principe : on photographie les réglages de Steam, tu changes des options dans
+l'interface de Steam, puis on regarde quelles clés ont changé. Résultat dans :
+  $out
+
+À changer dans Steam > Paramètres > Remote Play (bouton « Options avancées
+de l'hôte ») : modifie CHAQUE option de l'hôte (coche/décoche), y compris
+« Adapter la résolution du bureau au client de streaming » et « Prioriser le
+trafic réseau ». Note sur un papier ce que tu as changé (ancien -> nouveau).
+EOF
+
+	# 1. Steam doit être fermé.
+	if systemctl --user is-active --quiet steamd.service; then
+		[[ $(ask "steamd va être arrêté le temps du relevé (relancé à la fin). Continuer ? [O/n]") == [nN]* ]] && exit 0
+		systemctl --user stop steamd.service
+		was_active=true
+	fi
+	if steam_running; then
+		echo "Fermeture de Steam..."
+		steam -shutdown >/dev/null 2>&1
+		for _ in $(seq 60); do
+			steam_running || break
+			sleep 1
+		done
+		steam_running && {
+			echo "Steam ne se ferme pas : ferme-le complètement puis relance cette commande."
+			exit 1
+		}
+	fi
+
+	# 2. Photo, puis changement dans l'interface.
+	python3 "$BIN_DIR/steamd-steamcfg" snapshot
+	echo
+	echo "Lancement de Steam : change les options, puis QUITTE Steam (menu Steam > Quitter)."
+	(setsid steam >/dev/null 2>&1 &)
+	ask "Appuie sur Entrée une fois Steam complètement quitté..." >/dev/null
+	for _ in $(seq 60); do
+		steam_running || break
+		sleep 1
+	done
+	if steam_running; then
+		echo "Steam tourne encore, fermeture..."
+		steam -shutdown >/dev/null 2>&1
+		for _ in $(seq 60); do
+			steam_running || break
+			sleep 1
+		done
+	fi
+
+	# 3. Différences.
+	{
+		echo "steamd-probe options-remoteplay, $(date '+%F %T')"
+		echo "Options changées (d'après l'utilisateur) : $(ask "Liste ce que tu as changé (ex. « prioriser trafic : non->oui, adapter résolution : non->oui ») :")"
+		echo
+		python3 "$BIN_DIR/steamd-steamcfg" diff
+	} | tee "$out"
+
+	if [[ $was_active == true ]]; then
+		echo
+		echo "Relance de steamd..."
+		systemctl --user start steamd.service
+	fi
+	echo
+	echo "Relevé écrit : $out"
+	echo "Les options gardent les valeurs que tu viens de choisir dans Steam."
+}
+
+case ${1:-} in
+rapport | report) cmd_rapport ;;
+options-remoteplay) cmd_options_remoteplay ;;
+clients) cmd_clients ;;
+journal-stream) cmd_journal_stream ;;
+*)
+	sed -n '2,13p' "$0"
+	exit 2
+	;;
+esac

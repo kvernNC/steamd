@@ -98,7 +98,7 @@ EOF
 # --- Fichiers utilisateur ----------------------------------------------------
 step "Scripts dans $BIN_DIR"
 mkdir -p "$BIN_DIR"
-for f in steamd-launch steamd-doctor steamd-session-hook steamd-steamcfg; do
+for f in steamd-launch steamd-doctor steamd-session-hook steamd-steamcfg steamd-probe; do
 	install -m 0755 "$REPO_DIR/bin/$f" "$BIN_DIR/$f"
 	note "$BIN_DIR/$f"
 done

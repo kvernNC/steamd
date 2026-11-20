@@ -55,10 +55,11 @@ bureau quand quelqu'un utilise le PC.
 
 | Fichier | Rôle |
 |---|---|
-| `bin/steamd-launch` | Superviseur (ExecStart). États `running`, `busy`, `standby`, `backoff`, `stopped` écrits dans `$XDG_RUNTIME_DIR/steamd/state`. SIGUSR1 = réévaluation immédiate. Options `--print`, `--status`, `--handover`, `--apply-settings`. |
+| `bin/steamd-launch` | Superviseur (ExecStart). États `running`, `busy`, `standby`, `backoff`, `stopped` écrits dans `$XDG_RUNTIME_DIR/steamd/state` (ligne 2 : raison, avec `(profil X)`). SIGUSR1 = réévaluation immédiate. Options `--print [PROFIL]`, `--clients`, `--profile`, `--status`, `--handover`, `--apply-settings`. Profils par client (`CLIENT_PROFILES`). |
 | `bin/steamd-session-hook` + `systemd/steamd-session-hook.service` | Rattaché à `graphical-session.target` (oneshot, avant le bureau) : réveille le superviseur à la connexion (attend `standby`/`busy`) et à la déconnexion. |
 | `bin/steamd-doctor` | Diagnostic OK/KO/ATTENTION avec pistes. |
 | `bin/steamd-steamcfg` | Python : lecture/écriture des VDF de Steam, snapshot/diff pour découvrir une clé. |
+| `bin/steamd-probe` | Relevés sur la vraie machine : `rapport`, `options-remoteplay` (guidé), `clients` (IP en direct), `journal-stream`. Écrit des fichiers `~/steamd-*.txt`. |
 | `systemd/steamd.service` | Unité utilisateur, `KillMode=mixed`, `TimeoutStopSec=60`. |
 | `udev/60-steamd-uinput.rules` | `/dev/uinput` au groupe `input` (manettes sans session). |
 | `polkit/60-steamd.rules` | Veille/extinction sans session + changement de profil d'énergie. |
@@ -96,11 +97,13 @@ Tout le reste n'a été testé qu'avec les faux de `tests/` : **à vérifier en 
 
 1. Mettre à jour : `git pull`, puis `./install.sh`. Installer au besoin
    `mangohud`, `libnotify`, `python`, `power-profiles-daemon`. Lancer
-   `steamd-doctor` et traiter les KO.
-2. **Options d'hôte Remote Play** : Steam fermé, `steamd-steamcfg snapshot` ;
-   ouvrir Steam au bureau, changer les options d'hôte Remote Play
-   (Paramètres > Remote Play > Options avancées de l'hôte), fermer Steam ;
-   `steamd-steamcfg diff`. Ensuite, ajouter des **options nommées** dans
+   `steamd-doctor` et traiter les KO. **Puis `steamd-probe rapport`** et lire
+   le fichier produit : il répond d'un coup à beaucoup des questions
+   ci-dessous (versions, options de gamescope, `gamescopectl`, couches
+   Vulkan, Proton, journal de streaming).
+2. **Options d'hôte Remote Play** : `steamd-probe options-remoteplay` (guidé :
+   arrêt de steamd, snapshot, Steam ouvert pour changer les options, diff,
+   relance). Ensuite, ajouter des **options nommées** dans
    `steamd-launch`/`steamd.conf` (ex. `REMOTEPLAY_PRIORITIZE_NETWORK=true`)
    qui se traduisent en entrées `STEAM_SETTINGS`, avec leurs vrais chemins
    de clés. L'utilisateur veut que steamd contrôle ces options sans afficher
@@ -122,68 +125,41 @@ Tout le reste n'a été testé qu'avec les faux de `tests/` : **à vérifier en 
    d'affichage. Pour Elden Ring (bloqué à 60) : `REFRESH=60`.
 6. Wi-Fi : `wifi/wifi-tune.sh install` sur le Deck (mot de passe `deck` requis)
    et éventuellement sur le PC ; `wifi-tune.sh status`.
-7. Dérouler le plan de test du README (tests 1 à 8, 6b à 6f).
-8. **Résolution et fréquence par client** (demande de l'utilisateur, à
-   concevoir) : il streame vers un Steam Deck (1280×800, 90 Hz) **et** une
-   TV 4K (60 Hz), et veut une **détection automatique** plutôt que
-   `WIDTH/HEIGHT/REFRESH` figés. La fréquence compte autant que la
-   résolution (90 Hz capturés vers une TV à 60 Hz = saccades). gamescope
-   headless fixe `-W/-H/-r` au démarrage. Investigations à faire d'abord :
-   - streamer depuis le Deck puis depuis la TV, et lire
-     `~/.steam/steam/logs/streaming_log.txt` (et `console_log.txt`) :
-     nom du client, IP, résolution et fréquence demandées ?
-   - gamescope en 3840×2160 + stream vers le Deck : la ligne `Capture` des
-     statistiques du client montre-t-elle 3840×2160 ou 1280×800 (Steam
-     réduit-il l'image côté hôte) ?
-   - `gamescopectl` (si présent) : changer la résolution ou la fréquence
-     headless à chaud, sans redémarrer gamescope ?
-   - tester l'option d'hôte Steam « Adapter la résolution du bureau au
-     client de streaming » dans gamescope headless (relever sa clé avec
-     `steamd-steamcfg snapshot/diff`) : Steam ajuste-t-il seul la
-     résolution de rendu selon le client ?
-   Conclusions déjà tirées avec l'utilisateur :
-   - **Pas de proxy Remote Play** : négociation chiffrée (clés d'appairage),
-     Steam vit dans gamescope (relancer gamescope = relancer le serveur
-     pendant que le client attend), et en VPN la mise en relation passe
-     par les serveurs de Valve.
-   - Le rendu 4K natif est hors de portée du PC : distinguer sortie
-     (`-W/-H`, peu coûteuse) et rendu (`-w/-h`, ex. 1440p + FSR gamescope).
-   - Plan retenu si l'option Steam ne suffit pas (choix de l'utilisateur) :
-     **un profil par défaut + des exceptions par IP**. Le profil par défaut
-     (`WIDTH/HEIGHT/REFRESH/HDR`) est celui du Deck : aucune annonce ni
-     coupure pour lui, au LAN comme en VPN. Seuls certains clients (la TV)
-     ont une exception :
-     ```
-     CLIENT_PROFILES=(
-       "192.168.88.50 OUTPUT=3840x2160 RENDER=2560x1440 REFRESH=60 HDR=true"
-     )
-     ```
-     (clés absentes = valeurs par défaut). Détection : IP du pair connecté
-     au Steam headless (ex. `ss` sur les ports Remote Play du processus,
-     ou conntrack). Changement de profil = relance de gamescope, seulement
-     sans partie en cours ; la première connexion du client échoue, il se
-     reconnecte 30 à 60 s plus tard. Retour au profil par défaut après
-     `PROFILE_REVERT_AFTER` sans client connecté, pour que le Deck trouve
-     son profil en place.
-   - HDR par profil (`HDR=true|false`, défaut false) : chaîne complète à
-     valider avant de garder l'option : `DXVK_HDR=1` (jeu, Proton-CachyOS),
-     `--hdr-enabled` de gamescope en headless, capture 10 bits (les stats
-     actuelles montrent `NV12`, 8 bits, donc SDR), HEVC Main10 VA-API,
-     prise en charge du HDR par Remote Play avec un hôte Linux, et par le
-     client Tizen. Si le format reste NV12 : pas de HDR, retirer l'option.
-   - Règle 2 : ne jamais relancer gamescope pendant une partie.
-   - Client TV : TV Samsung avec Steam Link pour Tizen
-     (https://github.com/pebeto/tizen-steam-link), portage non officiel,
-     aucun script possible côté TV : reconnaissance par IP (bail DHCP fixe
-     sur le MikroTik). Limites de décodage inconnues (4K ? HEVC ?) : lire la
-     résolution et le codec négociés dans l'affichage des performances de
-     Steam Link sur la TV avant de fixer son profil.
-
+7. Dérouler le plan de test du README (tests 1 à 9, avec 6b à 6f, 7b, 9b et 9c).
+8. **Résolution et fréquence par client** : **implémenté** (`CLIENT_PROFILES`,
+   profil par défaut + exceptions par IP, choix de l'utilisateur), testé
+   seulement avec un faux `ss` (`tests/run.sh profiles`). À valider :
+   - `steamd-probe clients` pendant un stream depuis le Deck puis la TV :
+     l'IP du client apparaît-elle parmi les sockets de `steam`
+     (`ss -Htunp state established`) ? Sinon, adapter `client_peers` dans
+     `steamd-launch` (autre nom de processus, sockets UDP non connectés :
+     piste conntrack ou journal de streaming, voir `steamd-probe journal-stream`).
+   - la reconnexion du client après le redémarrage de Steam headless, et
+     le temps nécessaire (README, test 9) ;
+   - d'abord tester l'option d'hôte « Adapter la résolution du bureau au
+     client de streaming » (relevée par `steamd-probe options-remoteplay`) :
+     si Steam ajuste seul le rendu dans gamescope, les profils ne servent
+     plus qu'à la fréquence ;
+   - la TV (Steam Link pour Tizen, https://github.com/pebeto/tizen-steam-link,
+     aucun script possible) : bail DHCP fixe sur le MikroTik, puis lire la
+     résolution et le codec négociés dans ses statistiques avant de fixer
+     son profil (4K ? HEVC ?) ;
+   - HDR (`HDR=true` dans un profil : `--hdr-enabled` + `DXVK_HDR=1`) :
+     chaîne complète à valider (capture 10 bits, alors que les stats
+     actuelles montrent `NV12` 8 bits ; Remote Play avec hôte Linux ; client
+     Tizen). Si le format reste NV12 : retirer l'option.
+   Conclusions tirées avec l'utilisateur : pas de proxy Remote Play
+   (négociation chiffrée, Steam vit dans gamescope, en VPN la mise en
+   relation passe par Valve) ; le rendu 4K natif est hors de portée du PC
+   (distinguer `OUTPUT` et `RENDER`) ; règle 2 : jamais de relance de
+   gamescope pendant une partie.
+9. Réveil à travers le VPN : **implémenté** dans `deck/wake-host.sh`
+   (`WAKE_SSH`, `WAKE_SSH_CMD`, `WAKE_SSH_MODE=auto`), testé avec un faux
+   `ssh`. À configurer sur le Deck (clé SSH vers le MikroTik ou le Pi) et
+   à tester (README, test 7b).
 
 ## Propositions faites, sans réponse de l'utilisateur
 
-- `wake-host.sh` qui passe par le Pi ou le MikroTik en SSH quand le Deck est
-  hors du LAN (le broadcast ne traverse pas WireGuard).
 - Profils par jeu (ex. Elden Ring à 60 Hz, le reste à 90) : demanderait de
   relancer gamescope au changement de jeu.
 - Fréquences GPU forcées pendant le stream (`power_dpm_force_performance_level`) :
@@ -197,8 +173,9 @@ Tout le reste n'a été testé qu'avec les faux de `tests/` : **à vérifier en 
   accord.
 - Avant chaque commit : `shellcheck -x bin/steamd-launch bin/steamd-doctor
   bin/steamd-session-hook install.sh uninstall.sh deck/wake-host.sh
-  wifi/wifi-tune.sh tests/run.sh` et `tests/run.sh` (≈ 2 min, `idle` compris ;
-  `tests/run.sh print login busy` pour un sous-ensemble).
+  bin/steamd-probe wifi/wifi-tune.sh tests/run.sh` et `tests/run.sh` (≈ 3 min,
+  `idle` compris ; `tests/run.sh print login busy profiles` pour un
+  sous-ensemble).
 - Style : bash avec tabulations, `set -euo pipefail`, messages en français,
   une piste de correction pour chaque erreur.
 - Sur la vraie machine, déboguer avec :

@@ -19,6 +19,14 @@ COUNT=3                       # nombre d'envois (l'UDP peut se perdre)
 # Optionnel : attendre que le PC réponde au ping avant de rendre la main.
 HOST_ADDR=""                  # IP ou nom du PC, vide = ne pas attendre
 WAIT_TIMEOUT=90               # secondes, utilisé seulement si HOST_ADDR est défini
+# Hors du réseau local (VPN WireGuard) : le broadcast ne traverse pas le
+# tunnel. Une machine du LAN (MikroTik ou Raspberry Pi) envoie alors le magic
+# packet, en SSH par clé (pas de mot de passe possible en mode jeu).
+WAKE_SSH=""                   # ex. "admin@192.168.88.1" ; vide = jamais en SSH
+WAKE_SSH_CMD=""               # commande lancée sur cette machine, {MAC} remplacé :
+#   MikroTik : '/tool wol interface=bridge mac={MAC}'
+#   Pi       : 'wakeonlan {MAC}'
+WAKE_SSH_MODE=auto            # auto (SSH si un tunnel WireGuard est actif), always, never
 # -----------------------------------------------------------------------------
 
 set -uo pipefail
@@ -63,7 +71,42 @@ send_wakeonlan() {
 	done
 }
 
-if command -v wakeonlan >/dev/null 2>&1; then
+# Le Deck passe-t-il par un tunnel WireGuard pour joindre le PC ?
+via_vpn() {
+	if [[ -n $HOST_ADDR ]]; then
+		local dev
+		dev=$(ip route get "$HOST_ADDR" 2>/dev/null | grep -o 'dev [^ ]*' | cut -d' ' -f2)
+		[[ -n $dev ]] && ip -d link show "$dev" 2>/dev/null | grep -q wireguard && return 0
+		[[ $dev == wg* ]] && return 0
+		return 1
+	fi
+	ip -o link show type wireguard up 2>/dev/null | grep -q .
+}
+
+send_ssh() {
+	[[ -n $WAKE_SSH_CMD ]] || {
+		log "WAKE_SSH est défini mais pas WAKE_SSH_CMD (voir les exemples en tête de script)"
+		return 2
+	}
+	local cmd=${WAKE_SSH_CMD//\{MAC\}/$HOST_MAC}
+	ssh -o BatchMode=yes -o ConnectTimeout=8 -o StrictHostKeyChecking=accept-new "$WAKE_SSH" "$cmd" >/dev/null
+}
+
+use_ssh=false
+case $WAKE_SSH_MODE in
+always) use_ssh=true ;;
+auto) [[ -n $WAKE_SSH ]] && via_vpn && use_ssh=true ;;
+never) ;;
+*)
+	log "WAKE_SSH_MODE invalide : $WAKE_SSH_MODE (auto, always, never)"
+	exit 2
+	;;
+esac
+
+if [[ $use_ssh == true ]]; then
+	method="ssh $WAKE_SSH"
+	send_ssh
+elif command -v wakeonlan >/dev/null 2>&1; then
 	method=wakeonlan
 	send_wakeonlan
 elif command -v python3 >/dev/null 2>&1; then
@@ -76,9 +119,14 @@ fi
 rc=$?
 if ((rc != 0)); then
 	log "échec de l'envoi ($method, code $rc)"
+	[[ $use_ssh == true ]] && log "piste : clé SSH du Deck autorisée sur $WAKE_SSH ? test : ssh -o BatchMode=yes $WAKE_SSH true"
 	exit 1
 fi
-log "magic packet envoyé à $HOST_MAC via $BROADCAST:$PORT (${COUNT}x, $method)"
+if [[ $use_ssh == true ]]; then
+	log "magic packet pour $HOST_MAC envoyé depuis $WAKE_SSH (mode $WAKE_SSH_MODE)"
+else
+	log "magic packet envoyé à $HOST_MAC via $BROADCAST:$PORT (${COUNT}x, $method)"
+fi
 
 if [[ -n $HOST_ADDR ]]; then
 	log "attente de $HOST_ADDR (max ${WAIT_TIMEOUT}s)"

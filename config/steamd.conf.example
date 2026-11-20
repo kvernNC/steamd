@@ -11,6 +11,27 @@ REFRESH=60
 # Résolution vue par l'application (-w/-h). Vide = identique à WIDTH/HEIGHT.
 APP_WIDTH=""
 APP_HEIGHT=""
+# HDR (gamescope --hdr-enabled, DXVK_HDR=1). À valider de bout en bout : si
+# les statistiques du client montrent encore NV12 (8 bits), le HDR ne passe pas.
+HDR=false
+
+# --- Profils par client ---------------------------------------------------------
+# Les réglages ci-dessus forment le profil par défaut (le Steam Deck par
+# exemple). Certaines IP peuvent avoir leur propre profil :
+#   "IP[,IP2] OUTPUT=LxH RENDER=LxH REFRESH=N HDR=true|false FPS_LIMIT=N"
+# OUTPUT : sortie de gamescope (-W/-H), peu coûteuse ; RENDER : résolution de
+# rendu du jeu (-w/-h), ce qui pèse sur le GPU (gamescope agrandit l'image).
+# Clés absentes = valeurs du profil par défaut ; OUTPUT sans RENDER = même
+# rendu que la sortie. Mettre aussi l'IP WireGuard du client s'il en a une.
+# Quand un client du profil se connecte, Steam headless redémarre avec ce
+# profil (sa première connexion échoue, se reconnecter ~30-60 s après),
+# jamais pendant une partie. Retour au profil par défaut après
+# PROFILE_REVERT_AFTER secondes sans ce client.
+# IP des clients connectés : steamd-launch --clients (ou steamd-probe clients).
+CLIENT_PROFILES=(
+	# "192.168.88.50 OUTPUT=3840x2160 RENDER=2560x1440 REFRESH=60"
+)
+PROFILE_REVERT_AFTER=600
 
 # --- Steam --------------------------------------------------------------------
 # Mode de capture pour Remote Play :

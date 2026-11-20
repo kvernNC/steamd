@@ -65,6 +65,7 @@ steamd/
 │   ├── steamd-launch           # wrapper : lit la conf, lance gamescope et Steam
 │   ├── steamd-doctor           # diagnostic
 │   ├── steamd-steamcfg         # lit et modifie les réglages de Steam (Python)
+│   ├── steamd-probe            # relevés sur la vraie machine (rapport, options, clients)
 │   └── steamd-session-hook     # arrêt et reprise selon la session locale
 ├── deck/
 │   └── wake-host.sh            # envoi du magic packet depuis le Deck
@@ -132,6 +133,9 @@ HEIGHT=800
 REFRESH=60
 APP_WIDTH=""                    # vide = WIDTH
 APP_HEIGHT=""                   # vide = HEIGHT
+HDR=false                       # à valider de bout en bout (voir Profils par client)
+CLIENT_PROFILES=()              # exceptions par IP : résolution, rendu, fréquence, HDR
+PROFILE_REVERT_AFTER=600        # retour au profil par défaut sans ce client
 STEAM_CAPTURE=pipewire-dmabuf   # pipewire-dmabuf | pipewire | none
 STEAM_UI_ARG="-tenfoot"         # ou -gamepadui
 GAMESCOPE_EXTRA_ARGS=""
@@ -187,6 +191,34 @@ Plusieurs de ces variables sont repérées grâce à [GOverlay](https://github.c
 À essayer dans `STEAM_ENV` avec Proton-CachyOS et une carte RDNA4 : `PROTON_FSR4_UPGRADE=1` remplace FSR 3.1 par FSR 4 dans les jeux compatibles. Avec un upscaler en mode qualité, le GPU travaille moins et garde de la marge pour l'encodage dans les jeux lourds.
 
 `steamd-launch --print` affiche l'environnement exact donné aux jeux. `steamd-doctor` vérifie MangoHud et l'accès à `/dev/ntsync`. Il lit aussi le script de chaque version de Proton installée (Proton-CachyOS, GE-Proton, Proton officiel) pour indiquer quelle variable pilote ntsync. Pendant une partie, il confirme que le `wineserver` a bien ouvert `/dev/ntsync`.
+
+### Profils par client
+
+Les réglages `WIDTH`, `HEIGHT`, `APP_WIDTH`, `APP_HEIGHT`, `REFRESH` et `HDR` forment le **profil par défaut**, celui du Steam Deck par exemple. Certaines IP peuvent avoir leur propre profil, par exemple une TV 4K à 60 Hz :
+
+```bash
+CLIENT_PROFILES=(
+	"192.168.88.50 OUTPUT=3840x2160 RENDER=2560x1440 REFRESH=60"
+)
+```
+
+| Clé | Rôle |
+|---|---|
+| `OUTPUT=LxH` | sortie de gamescope (`-W/-H`), c'est-à-dire l'image capturée. Peu coûteuse |
+| `RENDER=LxH` | résolution de rendu du jeu (`-w/-h`), ce qui pèse sur le GPU ; gamescope agrandit l'image jusqu'à la sortie. Sans `RENDER`, le rendu est égal à la sortie |
+| `REFRESH=N` | fréquence de gamescope, donc de la capture. Elle doit correspondre à l'écran du client (60 pour une TV), sinon l'image saccade |
+| `HDR=true` | `--hdr-enabled` dans gamescope et `DXVK_HDR=1` pour les jeux. À valider : si les statistiques du client montrent toujours `NV12` (8 bits), le HDR ne passe pas |
+| `FPS_LIMIT=N` | limite propre au profil (sinon `auto`, égale à `REFRESH`) |
+
+Les clés absentes reprennent le profil par défaut. Plusieurs IP peuvent partager un profil (`"192.168.88.50,10.8.0.5 ..."`), utile pour un client qui passe aussi par WireGuard.
+
+- **Détection :** `steamd` regarde les IP connectées aux sockets de Steam, sans proxy ni droits root.
+- **Changement de profil :** quand un client du profil se connecte, Steam headless redémarre avec ce profil. La première connexion de ce client échoue ; il faut se reconnecter 30 à 60 secondes plus tard. **Jamais pendant une partie.**
+- **Retour au profil par défaut :** après `PROFILE_REVERT_AFTER` secondes sans ce client (10 minutes par défaut). Le client par défaut retrouve ainsi son profil sans coupure.
+- **Changement manuel :** `steamd-launch --profile 192.168.88.50`, ou `--profile default`.
+- **Vérifier :** `steamd-launch --clients` affiche les IP connectées et le profil correspondant ; `steamd-launch --print 192.168.88.50` affiche la commande d'un profil.
+
+Si l'option d'hôte de Steam « Adapter la résolution du bureau au client de streaming » suffit dans gamescope, ces profils ne servent plus qu'à la fréquence. C'est à vérifier sur la vraie machine.
 
 ### Réglages de Steam pilotés par `steamd`
 
@@ -286,6 +318,17 @@ Le diagnostic vérifie : les binaires et le backend headless de gamescope, les f
 
 Chaque point est marqué `OK`, `KO` ou `ATTENTION`, avec une piste de correction. Le code de sortie est le nombre de `KO`. Options : `-n 100` pour afficher plus de logs, `--no-logs` pour ne pas les afficher.
 
+### Relevés sur la vraie machine : `steamd-probe`
+
+`steamd-probe` collecte en une commande les informations utiles au réglage et au débogage. Chaque commande écrit un fichier texte dans le dossier personnel, à transmettre tel quel.
+
+| Commande | Ce qu'elle fait |
+|---|---|
+| `steamd-probe rapport` | Rapport complet : versions des paquets, options utiles de gamescope et `gamescopectl`, état de `steamd`, `steamd-doctor`, couches Vulkan, versions de Proton, partie en cours (ntsync, blocage de veille, profil d'énergie), Wi-Fi, journal de streaming de Steam, journal de `steamd` |
+| `steamd-probe options-remoteplay` | Relevé guidé des clés des options Remote Play : arrête `steamd`, photographie les réglages, ouvre Steam pour que tu changes les options, puis affiche les clés modifiées et relance `steamd` |
+| `steamd-probe clients` | Suivi en direct des IP connectées au Steam headless et du profil choisi. Sert à trouver l'IP de la TV et à vérifier la détection |
+| `steamd-probe journal-stream` | Extrait du journal de streaming de Steam (client, résolution, codec, HDR). À lancer après une session depuis chaque client |
+
 ## Désinstallation
 
 ```bash
@@ -324,6 +367,30 @@ Mise en place, en mode bureau sur le Deck :
 4. Steam > *Ajouter un jeu non-Steam* > choisir le script, puis le renommer « Réveil PC ».
 
 Le mode jeu n'affiche rien : chaque envoi est journalisé dans `~/.local/state/steamd/wake-host.log`.
+
+**À travers le VPN WireGuard,** le broadcast du magic packet ne traverse pas le tunnel. `wake-host.sh` peut alors demander à une machine du LAN de l'envoyer, en SSH par clé :
+
+```bash
+WAKE_SSH="admin@192.168.88.1"
+WAKE_SSH_CMD="/tool wol interface=bridge mac={MAC}"
+WAKE_SSH_MODE=auto
+```
+
+- `WAKE_SSH` : la machine relais. L'exemple est un MikroTik ; pour le Raspberry Pi, `WAKE_SSH_CMD="wakeonlan {MAC}"`.
+- `WAKE_SSH_MODE` : en `auto`, le SSH n'est utilisé que si un tunnel WireGuard est actif. Les autres valeurs sont `always` et `never`.
+- **Clé SSH :** le mode jeu ne peut pas demander de mot de passe. Il faut donc une clé SSH du Deck autorisée sur le relais. Pour en créer une :
+
+  ```bash
+  ssh-keygen -t ed25519
+  ```
+
+  Pour l'autoriser sur le Pi :
+
+  ```bash
+  ssh-copy-id pi@192.168.88.2
+  ```
+
+  Sur le MikroTik, importe la clé publique avec `/user ssh-keys import`.
 
 ## Wi-Fi : réduire les pics de latence
 
@@ -458,6 +525,10 @@ Le magic packet est un broadcast : depuis le VPN, `wake-host.sh` ne l'envoie pas
 | 6e | Partie Remote Play en cours | `systemd-inhibit --list` montre le blocage posé par steamd |
 | 6f | `IDLE_ACTION=suspend` ou `poweroff`, PC réveillé par WoL sans connexion | Le PC se met en veille ou s'éteint après `IDLE_TIMEOUT` sans partie |
 | 7 | PC éteint, raccourci de réveil sur le Deck | Le PC démarre et Remote Play est disponible en moins de 60 s |
+| 7b | Idem en VPN WireGuard, avec `WAKE_SSH` configuré | Le magic packet part du relais (journal `wake-host.log`) et le PC démarre |
+| 9 | `CLIENT_PROFILES` pour la TV, connexion depuis la TV | `steamd-launch --clients` montre l'IP de la TV ; Steam headless redémarre avec le profil TV ; reconnexion réussie au bon format (statistiques de Steam Link) |
+| 9b | Retour au Deck plus de `PROFILE_REVERT_AFTER` après la TV | Profil par défaut déjà en place, connexion sans coupure |
+| 9c | `HDR=true` dans le profil TV | Les statistiques montrent un format 10 bits (sinon : le HDR ne passe pas, retirer l'option) |
 | 8 | `steamd-doctor` | Rapport lisible, chaque point marqué OK ou KO avec une piste de correction |
 
 ## Problèmes connus et pistes
@@ -476,6 +547,7 @@ Tout le contenu du périmètre v1 est écrit. Les scripts passent `shellcheck`. 
 
 - test 2 (uinput et PipeWire sans session) ;
 - le bon déclenchement de `steamd-session-hook` par Plasma 6 (`graphical-session-pre.target` puis `graphical-session.target`) ;
+- la détection des clients par `ss` (`steamd-probe clients`) et le changement de profil (test 9) ;
 - l'arrêt propre via `steam -shutdown` sans affichage ;
 - la limite d'images par seconde via MangoHud et les réglages `STREAM_TUNING` dans les jeux lancés par Steam headless (perte d'images et latence d'affichage, à comparer avec `STREAM_TUNING=false`) ;
 - ntsync réellement utilisé en jeu (`steamd-doctor` pendant une partie), l'effet d'Anti-Lag Mesa, et le changement de profil d'énergie sans session (règle polkit) ;
