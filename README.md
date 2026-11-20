@@ -197,7 +197,7 @@ Pour voir l'état du Wi-Fi et des réglages :
 - **Mot de passe :** sur le Deck, `sudo` demande que le mot de passe de l'utilisateur `deck` soit défini (`passwd`).
 - **Retour en arrière :** `./wifi/wifi-tune.sh uninstall` retire tout et restaure les tampons d'origine. Un redémarrage revient complètement aux réglages d'origine.
 
-En option, `./wifi/wifi-tune.sh lock-ap` verrouille le réseau Wi-Fi actuel sur son point d'accès actuel. Le Deck ne cherche alors plus d'autre point d'accès en arrière-plan, ce qui supprime une autre source de pics. La contrepartie : si ce point d'accès disparaît (autre pièce, autre bâtiment), le Deck ne se reconnecte plus à ce réseau. Pour défaire le verrouillage : `unlock-ap`. C'est à réserver au réseau de la maison ; à éviter sur un réseau d'entreprise avec plusieurs bornes.
+En option, `./wifi/wifi-tune.sh lock-ap` verrouille le réseau Wi-Fi actuel sur son point d'accès actuel. Le Deck ne cherche alors plus d'autre point d'accès en arrière-plan, ce qui supprime une autre source de pics. La contrepartie : si ce point d'accès disparaît (autre pièce, autre bâtiment), le Deck ne se reconnecte plus à ce réseau. Pour défaire le verrouillage : `unlock-ap`. C'est à réserver à un réseau à un seul point d'accès ; à éviter dès qu'il y en a plusieurs (maison avec répéteur ou maillage, entreprise).
 
 **Ne pas laisser ouverts les paramètres Internet du mode jeu**, même cachés par l'écran de veille : Steam y relance un balayage de tous les canaux toutes les 15 s. Chaque balayage dure environ 5 s, avec des pics jusqu'à 170 ms, même AP verrouillé. Pour le vérifier : `iw event -t` affiche `scan started` aux moments des pics.
 
