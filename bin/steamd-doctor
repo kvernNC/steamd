@@ -13,6 +13,7 @@ CONF="${XDG_CONFIG_HOME:-$HOME/.config}/steamd/steamd.conf"
 STEAMD_HOME="${XDG_DATA_HOME:-$HOME/.local/share}/steamd-home"
 CLIENT_PROFILES=()
 REFRESH=60 STREAM_TUNING=true FPS_LIMIT=auto FPS_LIMIT_METHOD=mangohud
+STEAM_SETTINGS=()
 # shellcheck source=/dev/null
 [[ -r $CONF ]] && source "$CONF"
 
@@ -150,6 +151,25 @@ elif [[ $FPS_LIMIT_METHOD == mangohud ]]; then
     fi
 else
     ok "limite à $fps images/s via DXVK/VKD3D-Proton (jeux Windows sous Proton)"
+fi
+
+if ((${#STEAM_SETTINGS[@]})); then
+    echo "== Réglages Steam (STEAM_SETTINGS)"
+    if ! command -v python3 >/dev/null; then
+        bad "python3 présent (STEAM_SETTINGS)" "sudo pacman -S python"
+    else
+        steamcfg=$(command -v steamd-steamcfg || echo "$(dirname "$(readlink -f "$0")")/steamd-steamcfg")
+        for s in "${STEAM_SETTINGS[@]}"; do
+            file=${s%%:*} rest=${s#*:}
+            key=${rest%%=*} want=${rest#*=}
+            cur=$(STEAMD_HOME=$STEAMD_HOME python3 "$steamcfg" get "$file" "$key" 2>&1 | sed 's/^.* : //' | sort -u | paste -sd,)
+            if [[ $cur == "$want" ]]; then
+                ok "$key = $want"
+            else
+                warn "$key vaut « ${cur:-?} », attendu « $want »" "appliqué au prochain démarrage de steamd (systemctl --user restart steamd)"
+            fi
+        done
+    fi
 fi
 
 echo "== Réseau"

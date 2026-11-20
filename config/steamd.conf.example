@@ -33,6 +33,13 @@ FPS_LIMIT_TIMING=late           # MangoHud : late = latence la plus basse, early
 STEAM_ENV=(
     # "DXVK_HUD=fps"
 )
+
+# Réglages du client Steam de steamd, écrits juste avant son démarrage (Steam fermé) :
+#   "FICHIER:CLÉ=VALEUR", FICHIER relatif à son dossier Steam (jokers permis), CLÉ en chemin « / ».
+# Ne jamais deviner une clé : la relever avec steamd-steamcfg snapshot / diff (voir README).
+STEAM_SETTINGS=(
+    # "userdata/*/config/localconfig.vdf:UserLocalConfigStore/.../MonOption=1"
+)
 STEAM_CAPTURE=pipewire-dmabuf   # pipewire-dmabuf | pipewire | none
 GAMESCOPE_EXTRA_ARGS=""         # ex. "--verbose"
 STEAM_EXTRA_ARGS=""

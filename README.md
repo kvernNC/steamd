@@ -60,6 +60,7 @@ steamd/
 │   ├── steamd-launch           # wrapper : lit la conf, lance gamescope et Steam
 │   ├── steamd-doctor           # diagnostic
 │   ├── steamd-profiled         # profil d'affichage selon le client Remote Play connecté
+│   ├── steamd-steamcfg         # réglages VDF du client steamd (snapshot / diff / apply)
 │   └── steamd-setup            # partie utilisateur de l'installation
 ├── src/
 │   └── steamd-vaapi.c          # LD_PRELOAD : CBR + tampon d'une image pour l'encodeur VA-API
@@ -96,6 +97,7 @@ FPS_LIMIT=auto                  # auto = REFRESH | 0 | N
 FPS_LIMIT_METHOD=mangohud       # mangohud | dxvk
 FPS_LIMIT_TIMING=late           # late | early
 STEAM_ENV=()
+STEAM_SETTINGS=()               # "FICHIER:CLÉ=VALEUR", voir « Réglages Steam sans interface »
 STEAM_CAPTURE=pipewire-dmabuf   # pipewire-dmabuf | pipewire | none
 GAMESCOPE_EXTRA_ARGS=""
 STEAM_EXTRA_ARGS=""
@@ -224,6 +226,22 @@ Ces réglages ne s'appliquent qu'aux jeux de Steam headless, jamais au Steam du 
   - `auto` fixe la limite à la fréquence du profil, `0` la retire, et `N` la fixe à N. Exemple : 45 avec `REFRESH=90` pour un jeu lourd, dont le rythme régulier est plus fluide qu'un rythme irrégulier proche de 90.
   - `FPS_LIMIT_METHOD=mangohud` passe par la couche Vulkan MangoHud, invisible, pour tous les jeux. `dxvk` passe par les limiteurs de DXVK et VKD3D-Proton, pour les jeux Windows seulement. Sans MangoHud installé, steamd bascule sur `dxvk`.
 - `STEAM_ENV=("NOM=valeur" ...)` : variables ajoutées en dernier, qui l'emportent. On l'utilise par exemple pour retirer un réglage (`"PROTON_DXVK_LOWLATENCY=0"`).
+
+### Réglages Steam sans interface
+
+Steam headless n'a pas d'écran pour changer ses options. `steamd-steamcfg` (Python, sans dépendance) lit et modifie les fichiers VDF de **son** client, dans `STEAMD_HOME`. Le Steam du bureau n'est jamais touché. Steam réécrit ces fichiers en quittant, donc on ne les modifie que Steam fermé. `steamd-steamcfg` refuse si le Steam de steamd tourne, et ignore le Steam du bureau.
+
+Pour trouver la clé d'une option :
+
+```bash
+systemctl --user stop steamd
+steamd-steamcfg snapshot
+steamd-launch --setup          # changer l'option, puis quitter Steam complètement
+steamd-steamcfg diff           # affiche la clé, prête à copier : STEAM_SETTINGS+=("…")
+systemctl --user start steamd
+```
+
+On colle ensuite la ligne dans `STEAM_SETTINGS`. `steamd-launch` l'applique avant chaque démarrage, et `steamd-doctor` compare la valeur actuelle à celle attendue. Autres commandes : `get FICHIER CLÉ`, `set [--dry-run] FICHIER CLÉ VALEUR`, `apply`, `check` (relecture à l'identique). Une sauvegarde `.steamd.bak` est faite avant chaque écriture. `ENCODER` reste géré à part, sans chemin de clé à connaître.
 
 ### Cohabitation avec le Steam du bureau
 

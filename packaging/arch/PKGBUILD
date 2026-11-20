@@ -7,7 +7,8 @@ arch=('x86_64')
 license=('MIT')
 depends=('bash' 'gamescope' 'steam' 'pipewire' 'pipewire-pulse' 'wireplumber' 'systemd')
 makedepends=('gcc' 'libva')
-optdepends=('mangohud: FPS_LIMIT par la couche Vulkan (sinon DXVK/VKD3D seulement)')
+optdepends=('mangohud: FPS_LIMIT par la couche Vulkan (sinon DXVK/VKD3D seulement)'
+            'python: STEAM_SETTINGS et steamd-steamcfg')
 backup=()
 install=steamd.install
 
@@ -20,7 +21,7 @@ package() {
 
     install -Dm755 "$srcdir/libsteamd-vaapi.so" "$pkgdir/usr/lib/steamd/libsteamd-vaapi.so"
     install -Dm755 -t "$pkgdir/usr/bin" \
-        "$src"/bin/steamd-{launch,doctor,setup,profiled}
+        "$src"/bin/steamd-{launch,doctor,setup,profiled,steamcfg}
 
     install -dm755 "$pkgdir/usr/lib/systemd/user"
     for u in "$src"/systemd/*.service; do
