@@ -15,6 +15,8 @@ GAMESCOPE_EXTRA_ARGS="" STEAM_EXTRA_ARGS="" ENCODER="" VAAPI_STRICT_RC=false
 AUDIO_ISOLATE=false AUDIO_SINK=steamd
 APP_WIDTH="" APP_HEIGHT="" HDR=false
 CLIENT_PROFILES=()
+STREAM_TUNING=true FPS_LIMIT=auto FPS_LIMIT_METHOD=mangohud FPS_LIMIT_TIMING=late
+STEAM_ENV=()
 STEAMD_HOME="${XDG_DATA_HOME:-$HOME/.local/share}/steamd-home"
 # shellcheck source=/dev/null
 [[ -r $CONF ]] && source "$CONF"
@@ -27,12 +29,12 @@ PROFILE_REQUEST=$RUNDIR/profile.request  # demande de --profile, traitée par st
 
 # --- Profils d'affichage ------------------------------------------------------
 # Profil par défaut : WIDTH/HEIGHT (sortie), APP_WIDTH/APP_HEIGHT (rendu), REFRESH, HDR.
-# CLIENT_PROFILES : "IP[,IP2] OUTPUT=LxH RENDER=LxH REFRESH=N HDR=true|false"
+# CLIENT_PROFILES : "IP[,IP2] OUTPUT=LxH RENDER=LxH REFRESH=N HDR=true|false FPS_LIMIT=auto|N"
 valid_num() { [[ $1 =~ ^[1-9][0-9]{0,4}$ ]] && (($1 <= 16384)); }
 
 default_profile() {
     P_NAME=default P_W=$WIDTH P_H=$HEIGHT P_AW=${APP_WIDTH:-$WIDTH} P_AH=${APP_HEIGHT:-$HEIGHT}
-    P_R=$REFRESH P_HDR=$HDR
+    P_R=$REFRESH P_HDR=$HDR P_FPS=$FPS_LIMIT
 }
 
 # Remplit P_* depuis une entrée de CLIENT_PROFILES ; PARSE_ERROR en cas d'erreur
@@ -69,7 +71,10 @@ parse_profile() {
             HDR)
                 [[ $v == true || $v == false ]] || { PARSE_ERROR="HDR attend true ou false (valeur : « $v »)"; return 1; }
                 P_HDR=$v ;;
-            *) PARSE_ERROR="clé inconnue « $k » (OUTPUT, RENDER, REFRESH, HDR)"; return 1 ;;
+            FPS_LIMIT)
+                [[ $v == auto || $v == 0 ]] || valid_num "$v" || { PARSE_ERROR="FPS_LIMIT attend auto, 0 ou un entier (valeur : « $v »)"; return 1; }
+                P_FPS=$v ;;
+            *) PARSE_ERROR="clé inconnue « $k » (OUTPUT, RENDER, REFRESH, HDR, FPS_LIMIT)"; return 1 ;;
         esac
     done
     # OUTPUT sans RENDER : le jeu est rendu à la résolution de sortie
@@ -108,12 +113,23 @@ check_profiles() {
         [[ -z ${!v} ]] || valid_num "${!v}" || { log "$v invalide dans $CONF : « ${!v} »"; exit 2; }
     done
     [[ $HDR == true || $HDR == false ]] || { log "HDR invalide dans $CONF : « $HDR » (true ou false)"; exit 2; }
+    [[ $STREAM_TUNING == true || $STREAM_TUNING == false ]] || { log "STREAM_TUNING invalide : « $STREAM_TUNING » (true ou false)"; exit 2; }
+    [[ $FPS_LIMIT == auto || $FPS_LIMIT == 0 ]] || valid_num "$FPS_LIMIT" || { log "FPS_LIMIT invalide : « $FPS_LIMIT » (auto, 0 ou un entier)"; exit 2; }
+    [[ $FPS_LIMIT_METHOD == mangohud || $FPS_LIMIT_METHOD == dxvk ]] || { log "FPS_LIMIT_METHOD invalide : « $FPS_LIMIT_METHOD » (mangohud ou dxvk)"; exit 2; }
+    [[ $FPS_LIMIT_TIMING == late || $FPS_LIMIT_TIMING == early ]] || { log "FPS_LIMIT_TIMING invalide : « $FPS_LIMIT_TIMING » (late ou early)"; exit 2; }
+    for entry in "${STEAM_ENV[@]}"; do
+        [[ $entry =~ ^[A-Za-z_][A-Za-z0-9_]*= ]] || { log "STEAM_ENV : « $entry » n'est pas de la forme NOM=valeur"; exit 2; }
+    done
     for entry in "${CLIENT_PROFILES[@]}"; do
         parse_profile "$entry" || { log "CLIENT_PROFILES : « $entry » : $PARSE_ERROR"; exit 2; }
     done
 }
 
-print_profile() { printf '%-16s sortie %sx%s, rendu %sx%s, %s Hz, HDR %s\n' "$P_NAME" "$P_W" "$P_H" "$P_AW" "$P_AH" "$P_R" "$P_HDR"; }
+print_profile() {
+    printf '%-16s sortie %sx%s, rendu %sx%s, %s Hz, HDR %s, limite %s i/s\n' \
+        "$P_NAME" "$P_W" "$P_H" "$P_AW" "$P_AH" "$P_R" "$P_HDR" "$(fps_of "$P_FPS")"
+}
+fps_of() { if [[ $1 == auto ]]; then echo "$P_R"; else echo "$1"; fi; }
 
 case ${1:-} in
     --profiles)
@@ -193,7 +209,7 @@ if ! select_profile "$active"; then
     default_profile
     rm -f "$PROFILE_FILE"
 fi
-log "profil $P_NAME : sortie ${P_W}x$P_H, rendu ${P_AW}x$P_AH, $P_R Hz, HDR $P_HDR"
+log "profil $(print_profile)"
 
 # Le client Steam tourne dans le conteneur du runtime : la bibliothèque doit être sous son HOME
 if [[ $VAAPI_STRICT_RC == true ]]; then
@@ -246,11 +262,37 @@ esac
 eval "gs_extra=($GAMESCOPE_EXTRA_ARGS)"
 eval "steam_extra=($STEAM_EXTRA_ARGS)"
 
-hdr_gs=() hdr_env=()
-if [[ $P_HDR == true ]]; then hdr_gs=(--hdr-enabled) hdr_env=(env DXVK_HDR=1); fi
+# Environnement des jeux de Steam headless (le Steam du bureau n'est pas concerné).
+# Les options de lancement d'un jeu (VAR=... %command%) restent prioritaires.
+hdr_gs=() envs=()
+if [[ $STREAM_TUNING == true ]]; then
+    # Une seule image préparée d'avance au lieu de 3 : moins de latence
+    envs+=("DXVK_CONFIG=dxgi.maxFrameLatency=1;d3d9.maxFrameLatency=1")
+    # Proton-CachyOS : variantes « low latency » de DXVK et VKD3D-Proton (ignorées ailleurs)
+    envs+=(PROTON_DXVK_LOWLATENCY=1 PROTON_VKD3D_LOWLATENCY=1)
+    # Anti-Lag d'AMD fourni par Mesa (couche Vulkan), ignoré si absent
+    envs+=(ENABLE_LAYER_MESA_ANTI_LAG=1)
+fi
+fps=$(fps_of "$P_FPS")
+if ((fps > 0)); then
+    method=$FPS_LIMIT_METHOD
+    if [[ $method == mangohud ]] && ! compgen -G '/usr/share/vulkan/implicit_layer.d/MangoHud*.json' >/dev/null; then
+        log "MangoHud absent (sudo pacman -S mangohud) : limite via DXVK et VKD3D-Proton (jeux Windows sous Proton)"
+        method=dxvk
+    fi
+    case $method in
+        mangohud) envs+=(MANGOHUD=1 "MANGOHUD_CONFIG=fps_limit=$fps,fps_limit_method=$FPS_LIMIT_TIMING,no_display") ;;
+        dxvk)     envs+=("DXVK_FRAME_RATE=$fps" "VKD3D_FRAME_RATE=$fps") ;;
+    esac
+fi
+if [[ $P_HDR == true ]]; then hdr_gs=(--hdr-enabled) envs+=(DXVK_HDR=1); fi
+# Variables de l'utilisateur en dernier : elles l'emportent
+envs+=("${STEAM_ENV[@]}")
+game_env=()
+((${#envs[@]} == 0)) || game_env=(env "${envs[@]}")
 
 cmd=(gamescope -W "$P_W" -H "$P_H" -w "$P_AW" -h "$P_AH" -r "$P_R"
      --backend headless --steam "${hdr_gs[@]}" "${gs_extra[@]}" --
-     "${hdr_env[@]}" steam -tenfoot "${capture[@]}" "${steam_extra[@]}")
+     "${game_env[@]}" steam -tenfoot "${capture[@]}" "${steam_extra[@]}")
 log "${cmd[*]}"
 exec "${cmd[@]}"

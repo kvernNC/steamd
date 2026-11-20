@@ -7,6 +7,7 @@ arch=('x86_64')
 license=('MIT')
 depends=('bash' 'gamescope' 'steam' 'pipewire' 'pipewire-pulse' 'wireplumber' 'systemd')
 makedepends=('gcc' 'libva')
+optdepends=('mangohud: FPS_LIMIT par la couche Vulkan (sinon DXVK/VKD3D seulement)')
 backup=()
 install=steamd.install
 

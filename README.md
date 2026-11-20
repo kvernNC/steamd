@@ -90,7 +90,12 @@ HEIGHT=800
 REFRESH=60
 APP_WIDTH="" APP_HEIGHT=""      # résolution de rendu, vide = WIDTH/HEIGHT
 HDR=false
-CLIENT_PROFILES=()              # "IP[,IP2] OUTPUT=LxH RENDER=LxH REFRESH=N HDR=true|false"
+CLIENT_PROFILES=()              # "IP[,IP2] OUTPUT=LxH RENDER=LxH REFRESH=N HDR=true|false FPS_LIMIT=auto|N"
+STREAM_TUNING=true
+FPS_LIMIT=auto                  # auto = REFRESH | 0 | N
+FPS_LIMIT_METHOD=mangohud       # mangohud | dxvk
+FPS_LIMIT_TIMING=late           # late | early
+STEAM_ENV=()
 STEAM_CAPTURE=pipewire-dmabuf   # pipewire-dmabuf | pipewire | none
 GAMESCOPE_EXTRA_ARGS=""
 STEAM_EXTRA_ARGS=""
@@ -204,6 +209,21 @@ CLIENT_PROFILES=(
 - `steamd-launch --profiles` liste les profils et le profil actif. `steamd-launch --profile default|IP` en demande un à la main, et il est appliqué hors partie.
 - `HDR=true` ajoute `--hdr-enabled` à gamescope et `DXVK_HDR=1` aux jeux. À valider de bout en bout : si les stats du client montrent encore `NV12` (8 bits), le HDR ne passe pas.
 - Une entrée invalide arrête le service avec le code 2. Le message figure dans `journalctl --user -u steamd`.
+
+### Optimisation des jeux pour le stream
+
+Ces réglages ne s'appliquent qu'aux jeux de Steam headless, jamais au Steam du bureau. Les options de lancement d'un jeu (`VAR=... %command%`) restent prioritaires.
+
+- `STREAM_TUNING=true` (par défaut) :
+  - `DXVK_CONFIG=dxgi.maxFrameLatency=1;d3d9.maxFrameLatency=1` : une seule image préparée d'avance au lieu de trois, donc moins de latence. En échange, un peu moins d'images par seconde quand le processeur est limitant.
+  - `PROTON_DXVK_LOWLATENCY=1` et `PROTON_VKD3D_LOWLATENCY=1` : variantes basse latence de Proton-CachyOS, ignorées par les autres Proton.
+  - `ENABLE_LAYER_MESA_ANTI_LAG=1` : Anti-Lag d'AMD fourni par Mesa, ignoré si la couche est absente.
+
+  ntsync est actif par défaut dans les Proton récents. `steamd-doctor` le vérifie : `/dev/ntsync`, variables de chaque Proton et, pendant une partie, utilisation par `wineserver`.
+- `FPS_LIMIT` (par profil avec la clé `FPS_LIMIT=`) :
+  - `auto` fixe la limite à la fréquence du profil, `0` la retire, et `N` la fixe à N. Exemple : 45 avec `REFRESH=90` pour un jeu lourd, dont le rythme régulier est plus fluide qu'un rythme irrégulier proche de 90.
+  - `FPS_LIMIT_METHOD=mangohud` passe par la couche Vulkan MangoHud, invisible, pour tous les jeux. `dxvk` passe par les limiteurs de DXVK et VKD3D-Proton, pour les jeux Windows seulement. Sans MangoHud installé, steamd bascule sur `dxvk`.
+- `STEAM_ENV=("NOM=valeur" ...)` : variables ajoutées en dernier, qui l'emportent. On l'utilise par exemple pour retirer un réglage (`"PROTON_DXVK_LOWLATENCY=0"`).
 
 ### Cohabitation avec le Steam du bureau
 

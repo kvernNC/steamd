@@ -16,6 +16,23 @@ CLIENT_PROFILES=(
 )
 #PROFILE_REVERT_AFTER=600
 #PROFILE_POLL=5                 # intervalle de relevé des clients (s)
+
+# Jeux de Steam headless (jamais le Steam du bureau). Les options de lancement d'un jeu
+# (VAR=... %command%) restent prioritaires.
+# STREAM_TUNING=true : DXVK_CONFIG=dxgi.maxFrameLatency=1;d3d9.maxFrameLatency=1 (une image
+# d'avance au lieu de 3), PROTON_DXVK_LOWLATENCY=1 PROTON_VKD3D_LOWLATENCY=1 (Proton-CachyOS),
+# ENABLE_LAYER_MESA_ANTI_LAG=1. Pour en retirer un : le remettre à 0 dans STEAM_ENV.
+STREAM_TUNING=true
+# Limite d'images par seconde : auto = REFRESH du profil, 0 = aucune, N (ex. 45 avec REFRESH=90
+# pour un jeu lourd : un rythme stable sous-multiple de la capture est plus fluide).
+# Par profil : clé FPS_LIMIT= dans CLIENT_PROFILES.
+FPS_LIMIT=auto
+FPS_LIMIT_METHOD=mangohud       # mangohud (couche Vulkan, tous les jeux) | dxvk (jeux Windows sous Proton)
+FPS_LIMIT_TIMING=late           # MangoHud : late = latence la plus basse, early = intervalles plus réguliers
+# Variables supplémentaires pour tous les jeux (NOM=valeur), en dernier : elles l'emportent.
+STEAM_ENV=(
+    # "DXVK_HUD=fps"
+)
 STEAM_CAPTURE=pipewire-dmabuf   # pipewire-dmabuf | pipewire | none
 GAMESCOPE_EXTRA_ARGS=""         # ex. "--verbose"
 STEAM_EXTRA_ARGS=""
