@@ -123,6 +123,26 @@ Tout le reste n'a été testé qu'avec les faux de `tests/` : **à vérifier en 
 6. Wi-Fi : `wifi/wifi-tune.sh install` sur le Deck (mot de passe `deck` requis)
    et éventuellement sur le PC ; `wifi-tune.sh status`.
 7. Dérouler le plan de test du README (tests 1 à 8, 6b à 6f).
+8. **Résolution et fréquence par client** (demande de l'utilisateur, à
+   concevoir) : il streame vers un Steam Deck (1280×800, 90 Hz) **et** une
+   TV 4K (60 Hz), et veut une **détection automatique** plutôt que
+   `WIDTH/HEIGHT/REFRESH` figés. La fréquence compte autant que la
+   résolution (90 Hz capturés vers une TV à 60 Hz = saccades). gamescope
+   headless fixe `-W/-H/-r` au démarrage. Investigations à faire d'abord :
+   - streamer depuis le Deck puis depuis la TV, et lire
+     `~/.steam/steam/logs/streaming_log.txt` (et `console_log.txt`) :
+     nom du client, IP, résolution et fréquence demandées ?
+   - gamescope en 3840×2160 + stream vers le Deck : la ligne `Capture` des
+     statistiques du client montre-t-elle 3840×2160 ou 1280×800 (Steam
+     réduit-il l'image côté hôte) ?
+   - `gamescopectl` (si présent) : changer la résolution ou la fréquence
+     headless à chaud, sans redémarrer gamescope ?
+   Pistes : (1) repli sans détection : sortie 4K (`-W/-H`), rendu plus bas
+   avec FSR de gamescope, Steam réduit pour le Deck, mais une seule
+   fréquence ; (2) profils par client (par nom ou IP) appliqués à la
+   connexion, avant le lancement du jeu, en relançant gamescope si un
+   changement à chaud est impossible (coupure à la première connexion).
+   Règle 2 : ne jamais relancer gamescope pendant une partie.
 
 ## Propositions faites, sans réponse de l'utilisateur
 
