@@ -64,6 +64,7 @@ steamd/
 ├── bin/
 │   ├── steamd-launch           # wrapper : lit la conf, lance gamescope et Steam
 │   ├── steamd-doctor           # diagnostic
+│   ├── steamd-steamcfg         # lit et modifie les réglages de Steam (Python)
 │   └── steamd-session-hook     # arrêt et reprise selon la session locale
 ├── deck/
 │   └── wake-host.sh            # envoi du magic packet depuis le Deck
@@ -100,7 +101,7 @@ Ce que fait `install.sh` (relançable sans risque) :
 
 | Étape | Détail |
 |---|---|
-| Scripts | `steamd-launch`, `steamd-doctor` et `steamd-session-hook` dans `~/.local/bin` |
+| Scripts | `steamd-launch`, `steamd-doctor`, `steamd-session-hook` et `steamd-steamcfg` dans `~/.local/bin` |
 | Unités | `steamd.service` et `steamd-session-hook.service` dans `~/.config/systemd/user`, activées |
 | Configuration | `~/.config/steamd/steamd.conf` copié depuis l'exemple, **seulement s'il n'existe pas** |
 | udev | `/etc/udev/rules.d/60-steamd-uinput.rules` (groupe `input` par défaut, `--group NOM` pour changer) |
@@ -129,6 +130,9 @@ STEAM_CAPTURE=pipewire-dmabuf   # pipewire-dmabuf | pipewire | none
 STEAM_UI_ARG="-tenfoot"         # ou -gamepadui
 GAMESCOPE_EXTRA_ARGS=""
 STEAM_EXTRA_ARGS=""
+FPS_LIMIT=0                     # ex. 90 : limite des jeux lancés par Steam headless
+FPS_LIMIT_METHOD=mangohud       # mangohud | dxvk
+STEAM_SETTINGS=()               # réglages de Steam écrits avant chaque lancement
 DESKTOP_SESSION_POLICY=yield    # yield | takeover
 HANDOVER_DELAY=15               # après une partie, délai avant de rendre Steam au bureau
 RESUME_DESKTOP_STEAM=true       # lancer le Steam du bureau après le passage de main
@@ -155,6 +159,43 @@ Après une modification :
 ```bash
 systemctl --user restart steamd
 ```
+
+### Limite d'images par seconde
+
+`FPS_LIMIT=90`, avec la même valeur que `REFRESH`, plafonne les jeux lancés par le Steam headless. Le GPU garde ainsi de la marge pour la capture et l'encodage, et les images partent à intervalles réguliers. Cette limite ne touche pas au Steam du bureau. Par défaut, elle passe par MangoHud, invisible à l'écran (paquet `mangohud`), qui couvre les jeux natifs comme ceux sous Proton. Sans MangoHud, `steamd` utilise les limiteurs intégrés de DXVK et VKD3D-Proton.
+
+### Réglages de Steam pilotés par `steamd`
+
+Pour éviter d'ouvrir l'interface de Steam, `steamd` peut écrire lui-même des réglages dans les fichiers de configuration de Steam, par exemple les options d'hôte Remote Play. Il le fait juste avant chaque lancement du Steam headless, quand Steam est fermé et ne peut donc pas les écraser. Ces fichiers sont ceux de ton compte : les réglages valent aussi pour le Steam du bureau.
+
+```bash
+STEAM_SETTINGS=(
+	"userdata/*/config/localconfig.vdf:UserLocalConfigStore/Chemin/Vers/Option=1"
+)
+```
+
+Les noms des clés ne sont pas documentés par Valve. Pour trouver celle d'une option, une fois, depuis le bureau :
+
+1. Fermer Steam complètement, puis photographier les réglages :
+
+   ```bash
+   steamd-steamcfg snapshot
+   ```
+
+2. Ouvrir Steam, changer l'option, puis fermer Steam complètement.
+3. Afficher ce qui a changé, avec les lignes prêtes à copier dans `STEAM_SETTINGS` :
+
+   ```bash
+   steamd-steamcfg diff
+   ```
+
+Pour appliquer les réglages tout de suite, Steam fermé :
+
+```bash
+steamd-launch --apply-settings
+```
+
+`steamd-steamcfg get FICHIER CLÉ` affiche une valeur. Chaque fichier modifié est d'abord sauvegardé à côté, sous le nom `*.steamd.bak`. `steamd-doctor` indique pour chaque réglage s'il est déjà appliqué.
 
 ## Fonctionnement
 
@@ -302,6 +343,8 @@ Tout le contenu du périmètre v1 est écrit. Les scripts passent `shellcheck`. 
 - test 2 (uinput et PipeWire sans session) ;
 - le bon déclenchement de `steamd-session-hook` par Plasma 6 (`graphical-session-pre.target` puis `graphical-session.target`) ;
 - l'arrêt propre via `steam -shutdown` sans affichage ;
+- la limite d'images par seconde via MangoHud dans les jeux lancés par Steam headless ;
+- les noms de clés des options Remote Play, à relever avec `steamd-steamcfg diff` ;
 - la détection d'une partie via `reaper SteamLaunch AppId=` sur la version de Steam installée ;
 - le lancement du Steam du bureau depuis le service (environnement graphique importé par Plasma), l'affichage de la popup et ses boutons dans Plasma ;
 - pour `IDLE_ACTION=suspend` : le réveil du PC depuis la veille par le Wake-on-LAN.

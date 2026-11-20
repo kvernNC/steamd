@@ -72,6 +72,8 @@ systemctl --user show-environment >/dev/null 2>&1 ||
 for b in gamescope steam; do
 	command -v "$b" >/dev/null || warn "$b introuvable : sudo pacman -S $b"
 done
+command -v python3 >/dev/null ||
+	warn "python3 introuvable : STEAM_SETTINGS et steamd-steamcfg ne fonctionneront pas (sudo pacman -S python)"
 command -v notify-send >/dev/null ||
 	warn "notify-send introuvable : pas de notification sur le bureau pendant une partie Remote Play (sudo pacman -S libnotify)"
 
@@ -96,7 +98,7 @@ EOF
 # --- Fichiers utilisateur ----------------------------------------------------
 step "Scripts dans $BIN_DIR"
 mkdir -p "$BIN_DIR"
-for f in steamd-launch steamd-doctor steamd-session-hook; do
+for f in steamd-launch steamd-doctor steamd-session-hook steamd-steamcfg; do
 	install -m 0755 "$REPO_DIR/bin/$f" "$BIN_DIR/$f"
 	note "$BIN_DIR/$f"
 done

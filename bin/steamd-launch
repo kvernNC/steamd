@@ -5,6 +5,7 @@
 #   steamd-launch           boucle de supervision (ExecStart de steamd.service)
 #   steamd-launch --print   affiche la commande gamescope, sans l'exécuter
 #   steamd-launch --status  affiche l'état courant (running, standby, ...)
+#   steamd-launch --apply-settings  applique STEAM_SETTINGS (Steam doit être fermé)
 #   steamd-launch --handover  depuis le bureau : ferme Steam headless (et la
 #                             partie Remote Play en cours) et ouvre Steam ici
 #
@@ -42,6 +43,8 @@ die() {
 	exit "$code"
 }
 
+SELF_DIR=$(dirname -- "$(readlink -f -- "${BASH_SOURCE[0]}")")
+STEAMCFG="$SELF_DIR/steamd-steamcfg"
 CONF="${STEAMD_CONF:-${XDG_CONFIG_HOME:-$HOME/.config}/steamd/steamd.conf}"
 RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$UID}/steamd"
 STATE_FILE="$RUNTIME_DIR/state"
@@ -57,6 +60,9 @@ STEAM_CAPTURE=pipewire-dmabuf
 STEAM_UI_ARG="-tenfoot"
 GAMESCOPE_EXTRA_ARGS=""
 STEAM_EXTRA_ARGS=""
+FPS_LIMIT=0
+FPS_LIMIT_METHOD=mangohud
+STEAM_SETTINGS=()
 DESKTOP_SESSION_POLICY=yield
 HANDOVER_DELAY=15
 RESUME_DESKTOP_STEAM=true
@@ -84,7 +90,7 @@ is_uint() { [[ $1 =~ ^[0-9]+$ ]]; }
 
 validate_conf() {
 	local v
-	for v in WIDTH HEIGHT REFRESH POLL_INTERVAL RESTART_DELAY STOP_TIMEOUT HANDOVER_DELAY IDLE_TIMEOUT; do
+	for v in WIDTH HEIGHT REFRESH POLL_INTERVAL RESTART_DELAY STOP_TIMEOUT HANDOVER_DELAY IDLE_TIMEOUT FPS_LIMIT; do
 		is_uint "${!v}" || die $EXIT_CONFIG "$v doit être un entier (valeur : '${!v}')"
 	done
 	((POLL_INTERVAL >= 1)) || die $EXIT_CONFIG "POLL_INTERVAL doit être >= 1"
@@ -104,8 +110,28 @@ validate_conf() {
 	*) die $EXIT_CONFIG "IDLE_ACTION doit valoir none, suspend ou poweroff (valeur : '$IDLE_ACTION')" ;;
 	esac
 	((IDLE_TIMEOUT >= 60)) || die $EXIT_CONFIG "IDLE_TIMEOUT doit être >= 60"
+	case $FPS_LIMIT_METHOD in
+	mangohud | dxvk) ;;
+	*) die $EXIT_CONFIG "FPS_LIMIT_METHOD doit valoir mangohud ou dxvk (valeur : '$FPS_LIMIT_METHOD')" ;;
+	esac
+	if ((FPS_LIMIT > 0)) && [[ $FPS_LIMIT_METHOD == mangohud ]] && ! mangohud_installed; then
+		log "attention : MangoHud absent (sudo pacman -S mangohud), limite d'images par seconde via DXVK et VKD3D-Proton seulement (jeux Windows sous Proton)"
+		FPS_LIMIT_METHOD=dxvk
+	fi
+	local s
+	for s in "${STEAM_SETTINGS[@]}"; do
+		[[ $s =~ ^[^:=]+:[^=]+=.*$ ]] || die $EXIT_CONFIG "STEAM_SETTINGS : réglage mal formé '$s' (attendu FICHIER:CLÉ=VALEUR)"
+	done
+	if ((${#STEAM_SETTINGS[@]})) && ! command -v python3 >/dev/null; then
+		die $EXIT_CONFIG "STEAM_SETTINGS demande python3 (sudo pacman -S python)"
+	fi
 	command -v "$GAMESCOPE_BIN" >/dev/null || die $EXIT_CONFIG "gamescope introuvable ($GAMESCOPE_BIN)"
 	command -v "$STEAM_BIN" >/dev/null || die $EXIT_CONFIG "steam introuvable ($STEAM_BIN)"
+}
+
+mangohud_installed() {
+	compgen -G '/usr/share/vulkan/implicit_layer.d/MangoHud*.json' >/dev/null ||
+		compgen -G "$HOME/.local/share/vulkan/implicit_layer.d/MangoHud*.json" >/dev/null
 }
 
 build_command() {
@@ -120,8 +146,19 @@ build_command() {
 		-r "$REFRESH"
 		--backend headless --steam
 		"${gs_extra[@]}"
-		--
-		"$STEAM_BIN" "${steam_ui[@]}")
+		--)
+	# Limite d'images par seconde : variables d'environnement données à Steam
+	# headless seulement (et donc à ses jeux), pas à gamescope ni au bureau.
+	# mangohud : couche Vulkan, couvre les jeux natifs Vulkan et ceux sous
+	# Proton (DXVK et VKD3D-Proton passent par Vulkan). dxvk : limiteurs
+	# intégrés de DXVK et VKD3D-Proton, sans MangoHud.
+	if ((FPS_LIMIT > 0)); then
+		case $FPS_LIMIT_METHOD in
+		mangohud) CMD+=(env MANGOHUD=1 "MANGOHUD_CONFIG=fps_limit=$FPS_LIMIT,no_display") ;;
+		dxvk) CMD+=(env "DXVK_FRAME_RATE=$FPS_LIMIT" "VKD3D_FRAME_RATE=$FPS_LIMIT") ;;
+		esac
+	fi
+	CMD+=("$STEAM_BIN" "${steam_ui[@]}")
 	case $STEAM_CAPTURE in
 	pipewire-dmabuf) CMD+=(-pipewire-dmabuf) ;;
 	pipewire) CMD+=(-pipewire) ;;
@@ -309,7 +346,18 @@ child_alive() {
 	[[ $st != Z ]]
 }
 
+# Réglages de Steam (STEAM_SETTINGS) écrits dans ses fichiers juste avant son
+# lancement, quand il est fermé : il ne les écrasera donc pas.
+apply_steam_settings() {
+	((${#STEAM_SETTINGS[@]})) || return 0
+	local line
+	while IFS= read -r line; do
+		log "réglage Steam : $line"
+	done < <(python3 "$STEAMCFG" apply "${STEAM_SETTINGS[@]}" 2>&1 || echo "échec de l'application des réglages Steam (Steam lancé quand même)")
+}
+
 start_child() {
+	apply_steam_settings
 	log "lancement : ${CMD[*]}"
 	# Variables héritées d'une ancienne session de bureau (Plasma les importe
 	# dans le gestionnaire systemd utilisateur) : gamescope ne doit pas
@@ -530,6 +578,12 @@ case ${1:-} in
 	echo
 	exit 0
 	;;
+--apply-settings)
+	load_conf
+	validate_conf
+	python3 "$STEAMCFG" apply "${STEAM_SETTINGS[@]}"
+	exit $?
+	;;
 --handover)
 	mkdir -p "$RUNTIME_DIR"
 	: >"$HANDOVER_FILE"
@@ -543,7 +597,7 @@ case ${1:-} in
 	exit 0
 	;;
 "") ;;
-*) die $EXIT_CONFIG "option inconnue : $1 (attendu : --print, --status, --handover)" ;;
+*) die $EXIT_CONFIG "option inconnue : $1 (attendu : --print, --status, --handover, --apply-settings)" ;;
 esac
 
 load_conf

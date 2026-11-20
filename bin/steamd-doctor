@@ -89,7 +89,7 @@ fi
 
 # ---------------------------------------------------------------------------
 section "Installation steamd"
-for f in steamd-launch steamd-session-hook steamd-doctor; do
+for f in steamd-launch steamd-session-hook steamd-doctor steamd-steamcfg; do
 	if [[ -x $BIN_DIR/$f ]]; then ok "$BIN_DIR/$f"; else ko "$BIN_DIR/$f absent" "relancer ./install.sh"; fi
 done
 for u in steamd.service steamd-session-hook.service; do
@@ -238,6 +238,47 @@ else
 	ko "aucune installation Steam trouvée dans ~/.steam" "lancer Steam une première fois depuis le bureau"
 fi
 info "Remote Play : vérifier qu'il est activé dans Steam > Paramètres > Remote Play (non vérifiable ici)"
+
+# Réglages pilotés par steamd : limite d'images par seconde et STEAM_SETTINGS.
+mapfile -t cfg_lines < <(
+	FPS_LIMIT=0 FPS_LIMIT_METHOD=mangohud STEAM_SETTINGS=()
+	# shellcheck source=/dev/null
+	[[ -r $CONF ]] && source "$CONF" >/dev/null 2>&1
+	echo "$FPS_LIMIT $FPS_LIMIT_METHOD"
+	printf '%s\n' "${STEAM_SETTINGS[@]}"
+)
+read -r fps_limit fps_method <<<"${cfg_lines[0]:-0 mangohud}"
+if [[ ${fps_limit:-0} == 0 ]]; then
+	info "pas de limite d'images par seconde (FPS_LIMIT=0)"
+elif [[ $fps_method == mangohud ]]; then
+	if compgen -G '/usr/share/vulkan/implicit_layer.d/MangoHud*.json' >/dev/null; then
+		ok "limite à $fps_limit images/s via MangoHud (Steam headless seulement)"
+	else
+		warn "FPS_LIMIT=$fps_limit avec MangoHud, mais MangoHud est absent : repli sur DXVK/VKD3D" "sudo pacman -S mangohud"
+	fi
+else
+	ok "limite à $fps_limit images/s via DXVK/VKD3D-Proton (jeux Windows sous Proton)"
+fi
+settings=("${cfg_lines[@]:1}")
+if ((${#settings[@]} > 0)) && [[ -n ${settings[0]} ]]; then
+	if ! have python3; then
+		ko "STEAM_SETTINGS défini mais python3 absent" "sudo pacman -S python"
+	elif [[ -x $BIN_DIR/steamd-steamcfg ]]; then
+		for st in "${settings[@]}"; do
+			[[ -n $st ]] || continue
+			file=${st%%:*} rest=${st#*:}
+			key=${rest%%=*} want=${rest#*=}
+			cur=$(python3 "$BIN_DIR/steamd-steamcfg" get "$file" "$key" 2>/dev/null | head -1 | sed 's/^[^:]* : //')
+			if [[ $cur == "$want" ]]; then
+				ok "réglage Steam $key = $want"
+			else
+				warn "réglage Steam $key : ${cur:-absent} (voulu : $want)" "appliqué au prochain lancement de Steam headless, ou : steamd-launch --apply-settings (Steam fermé)"
+			fi
+		done
+	fi
+else
+	info "aucun réglage Steam piloté (STEAM_SETTINGS vide)"
+fi
 
 # ---------------------------------------------------------------------------
 section "Instance unique et session"

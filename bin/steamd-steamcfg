@@ -1,0 +1,431 @@
+#!/usr/bin/env python3
+"""steamd-steamcfg : lire et modifier les réglages de Steam sans ouvrir Steam.
+
+Steam stocke ses réglages dans des fichiers texte au format VDF (KeyValues),
+et les réécrit à sa fermeture : on ne modifie donc un fichier que lorsque
+Steam est fermé (steamd le fait juste avant de lancer Steam headless).
+
+Commandes :
+  snapshot                 photographie les fichiers de réglages de Steam
+  diff                     compare l'état actuel à la photo : affiche les clés
+                           modifiées, prêtes à copier dans STEAM_SETTINGS
+  get FICHIER CLÉ          affiche une valeur
+  set FICHIER CLÉ VALEUR   modifie une valeur (Steam doit être fermé)
+  apply RÉGLAGE...         applique des réglages « FICHIER:CLÉ=VALEUR »
+                           (format de STEAM_SETTINGS dans steamd.conf)
+  check                    vérifie que les fichiers sont relus et réécrits
+                           à l'identique
+
+FICHIER est relatif au dossier de Steam (~/.steam/steam), et peut contenir des
+jokers, par exemple userdata/*/config/localconfig.vdf. CLÉ est un chemin
+séparé par des « / », sans tenir compte de la casse, par exemple
+InstallConfigStore/Software/Valve/Steam/MonRéglage.
+
+Pour trouver la clé d'une option de l'interface de Steam :
+  1. fermer Steam complètement, puis : steamd-steamcfg snapshot
+  2. ouvrir Steam, changer l'option, fermer Steam complètement
+  3. steamd-steamcfg diff
+"""
+
+import fnmatch
+import glob
+import os
+import shutil
+import sys
+
+HOME = os.path.expanduser("~")
+STATE_DIR = os.path.join(
+    os.environ.get("XDG_STATE_HOME", os.path.join(HOME, ".local", "state")), "steamd"
+)
+SNAPSHOT_DIR = os.path.join(STATE_DIR, "steamcfg-snapshot")
+
+# Fichiers de réglages surveillés par snapshot/diff (relatifs au dossier Steam).
+WATCHED = [
+    "config/*.vdf",
+    "userdata/*/config/*.vdf",
+    "userdata/*/7/remote/sharedconfig.vdf",
+]
+IGNORED = ["config/loginusers.vdf", "config/libraryfolders.vdf", "config/dialogconfig*.vdf"]
+
+
+class VdfError(Exception):
+    pass
+
+
+def die(msg, code=1):
+    print(f"steamd-steamcfg: {msg}", file=sys.stderr)
+    sys.exit(code)
+
+
+def steam_root():
+    for d in (os.path.join(HOME, ".steam", "steam"), os.path.join(HOME, ".local", "share", "Steam")):
+        if os.path.isdir(d):
+            return os.path.realpath(d)
+    die("dossier Steam introuvable (~/.steam/steam)")
+
+
+def steam_running():
+    uid = os.getuid()
+    for pid in os.listdir("/proc"):
+        if not pid.isdigit():
+            continue
+        try:
+            if os.stat(f"/proc/{pid}").st_uid != uid:
+                continue
+            with open(f"/proc/{pid}/comm") as f:
+                if f.read().strip() == "steam":
+                    return True
+        except OSError:
+            continue
+    return False
+
+
+# --- Format VDF ---------------------------------------------------------------
+# Les chaînes sont conservées brutes (séquences d'échappement comprises) pour
+# réécrire le fichier tel quel.
+
+
+def tokenize(text):
+    i, n = 0, len(text)
+    while i < n:
+        c = text[i]
+        if c.isspace():
+            i += 1
+        elif text.startswith("//", i):
+            j = text.find("\n", i)
+            i = n if j < 0 else j
+        elif c in "{}":
+            yield c
+            i += 1
+        elif c == '"':
+            j = i + 1
+            while j < n and text[j] != '"':
+                j += 2 if text[j] == "\\" else 1
+            if j >= n:
+                raise VdfError("chaîne non terminée")
+            yield ("s", text[i + 1 : j])
+            i = j + 1
+        elif c == "[":
+            raise VdfError("conditions [$...] non prises en charge")
+        else:
+            j = i
+            while j < n and not text[j].isspace() and text[j] not in '{}"':
+                j += 1
+            yield ("s", text[i:j])
+            i = j
+
+
+def parse(text):
+    root = []
+    stack = [root]
+    key = None
+    for t in tokenize(text):
+        if t == "{":
+            if key is None:
+                raise VdfError("« { » sans clé")
+            node = []
+            stack[-1].append([key, node])
+            stack.append(node)
+            key = None
+        elif t == "}":
+            if key is not None or len(stack) == 1:
+                raise VdfError("« } » inattendu")
+            stack.pop()
+        else:
+            if key is None:
+                key = t[1]
+            else:
+                stack[-1].append([key, t[1]])
+                key = None
+    if key is not None or len(stack) != 1:
+        raise VdfError("fichier incomplet")
+    return root
+
+
+def dump(node, depth=0):
+    out = []
+    ind = "\t" * depth
+    for k, v in node:
+        if isinstance(v, list):
+            out.append(f'{ind}"{k}"\n{ind}{{\n')
+            out.append(dump(v, depth + 1))
+            out.append(f"{ind}}}\n")
+        else:
+            out.append(f'{ind}"{k}"\t\t"{v}"\n')
+    return "".join(out)
+
+
+def escape(value):
+    return value.replace("\\", "\\\\").replace('"', '\\"')
+
+
+def load(path):
+    with open(path, encoding="utf-8", errors="surrogateescape") as f:
+        text = f.read()
+    try:
+        return parse(text), text
+    except VdfError as e:
+        raise VdfError(f"{path} : {e}") from None
+
+
+def flatten(node, prefix=""):
+    for k, v in node:
+        p = f"{prefix}/{k}" if prefix else k
+        if isinstance(v, list):
+            yield from flatten(v, p)
+        else:
+            yield p, v
+
+
+def split_key(key):
+    parts = [p for p in key.split("/") if p]
+    if not parts:
+        raise VdfError("clé vide")
+    return parts
+
+
+def find(node, parts):
+    for k, v in node:
+        if k.lower() == parts[0].lower():
+            if len(parts) == 1:
+                return v
+            if isinstance(v, list):
+                return find(v, parts[1:])
+            return None
+    return None
+
+
+def assign(node, parts, value):
+    """Fixe la valeur ; crée les nœuds manquants. Renvoie True si modifié."""
+    for item in node:
+        if item[0].lower() == parts[0].lower():
+            if len(parts) == 1:
+                if isinstance(item[1], list):
+                    raise VdfError(f"« {item[0]} » est une section, pas une valeur")
+                if item[1] == value:
+                    return False
+                item[1] = value
+                return True
+            if not isinstance(item[1], list):
+                raise VdfError(f"« {item[0]} » est une valeur, pas une section")
+            return assign(item[1], parts[1:], value)
+    if len(parts) == 1:
+        node.append([parts[0], value])
+    else:
+        child = []
+        node.append([parts[0], child])
+        assign(child, parts[1:], value)
+    return True
+
+
+def write(path, tree):
+    shutil.copy2(path, path + ".steamd.bak")
+    tmp = path + ".steamd.tmp"
+    with open(tmp, "w", encoding="utf-8", errors="surrogateescape") as f:
+        f.write(dump(tree))
+    os.replace(tmp, path)
+
+
+# --- Fichiers -----------------------------------------------------------------
+
+
+def resolve(root, pattern):
+    if os.path.isabs(pattern) or ".." in pattern.split("/"):
+        raise VdfError(f"chemin refusé : {pattern} (relatif au dossier Steam, sans « .. »)")
+    return sorted(glob.glob(os.path.join(root, pattern)))
+
+
+def watched_files(root):
+    files = set()
+    for pat in WATCHED:
+        for p in glob.glob(os.path.join(root, pat)):
+            rel = os.path.relpath(p, root)
+            if not any(fnmatch.fnmatch(rel, ig) for ig in IGNORED):
+                files.add(rel)
+    return sorted(files)
+
+
+def generic(rel):
+    """userdata/123456/... -> userdata/*/... (pour STEAM_SETTINGS)."""
+    parts = rel.split("/")
+    if len(parts) > 1 and parts[0] == "userdata" and parts[1].isdigit():
+        parts[1] = "*"
+    return "/".join(parts)
+
+
+# --- Commandes ----------------------------------------------------------------
+
+
+def cmd_snapshot(_args):
+    root = steam_root()
+    if steam_running():
+        print("attention : Steam tourne, ses derniers changements ne sont peut-être pas encore écrits.")
+    shutil.rmtree(SNAPSHOT_DIR, ignore_errors=True)
+    files = watched_files(root)
+    for rel in files:
+        dst = os.path.join(SNAPSHOT_DIR, rel)
+        os.makedirs(os.path.dirname(dst), exist_ok=True)
+        shutil.copy2(os.path.join(root, rel), dst)
+    print(f"{len(files)} fichier(s) photographié(s) dans {SNAPSHOT_DIR}")
+    print("Ensuite : ouvrir Steam, changer l'option, fermer Steam complètement, puis : steamd-steamcfg diff")
+
+
+def cmd_diff(_args):
+    root = steam_root()
+    if not os.path.isdir(SNAPSHOT_DIR):
+        die("pas de photo : lancer d'abord « steamd-steamcfg snapshot » (Steam fermé)")
+    if steam_running():
+        print("attention : Steam tourne encore, fermez-le complètement pour qu'il écrive ses réglages.\n")
+    rels = set(watched_files(root))
+    for dp, _dn, fn in os.walk(SNAPSHOT_DIR):
+        for f in fn:
+            rels.add(os.path.relpath(os.path.join(dp, f), SNAPSHOT_DIR))
+    found = 0
+    for rel in sorted(rels):
+        before_p = os.path.join(SNAPSHOT_DIR, rel)
+        after_p = os.path.join(root, rel)
+        try:
+            before = dict(flatten(load(before_p)[0])) if os.path.exists(before_p) else {}
+            after = dict(flatten(load(after_p)[0])) if os.path.exists(after_p) else {}
+        except VdfError as e:
+            print(f"(ignoré) {e}")
+            continue
+        changes = []
+        for k in sorted(set(before) | set(after)):
+            b, a = before.get(k), after.get(k)
+            if b != a:
+                changes.append((k, b, a))
+        if not changes:
+            continue
+        print(f"== {rel}")
+        for k, b, a in changes:
+            found += 1
+            if a is None:
+                print(f"  supprimée : {k} (valeur avant : {b!r})")
+            else:
+                print(f"  {k} : {'(absente)' if b is None else repr(b)} -> {a!r}")
+                print(f'    STEAM_SETTINGS+=("{generic(rel)}:{k}={a}")')
+    if not found:
+        print("Aucune différence. Steam a-t-il bien été fermé complètement après le changement ?")
+
+
+def cmd_get(args):
+    if len(args) != 2:
+        die("usage : steamd-steamcfg get FICHIER CLÉ", 2)
+    root = steam_root()
+    files = resolve(root, args[0])
+    if not files:
+        die(f"aucun fichier ne correspond à {args[0]}")
+    rc = 0
+    for p in files:
+        v = find(load(p)[0], split_key(args[1]))
+        label = os.path.relpath(p, root)
+        if v is None:
+            print(f"{label} : (absente)")
+            rc = 1
+        elif isinstance(v, list):
+            print(f"{label} : (section)")
+        else:
+            print(f"{label} : {v}")
+    sys.exit(rc)
+
+
+def apply_one(root, pattern, key, value, dry=False):
+    files = resolve(root, pattern)
+    if not files:
+        print(f"steamd-steamcfg: aucun fichier ne correspond à {pattern}, réglage ignoré", file=sys.stderr)
+        return False
+    ok = True
+    for p in files:
+        tree, _ = load(p)
+        try:
+            changed = assign(tree, split_key(key), escape(value))
+        except VdfError as e:
+            print(f"steamd-steamcfg: {os.path.relpath(p, root)} : {e}", file=sys.stderr)
+            ok = False
+            continue
+        rel = os.path.relpath(p, root)
+        if changed:
+            if not dry:
+                write(p, tree)
+            print(f"{rel} : {key} = {value}{' (simulation)' if dry else ''}")
+        else:
+            print(f"{rel} : {key} déjà à {value}")
+    return ok
+
+
+def parse_setting(s):
+    if ":" not in s or "=" not in s.split(":", 1)[1]:
+        raise VdfError(f"réglage mal formé : {s!r} (attendu FICHIER:CLÉ=VALEUR)")
+    pattern, rest = s.split(":", 1)
+    key, value = rest.split("=", 1)
+    return pattern.strip(), key.strip(), value
+
+
+def require_stopped(args):
+    force = "--force" in args
+    if steam_running() and not force:
+        die("Steam tourne : il écraserait les modifications à sa fermeture. Fermez-le d'abord.", 3)
+    return [a for a in args if a != "--force"]
+
+
+def cmd_set(args):
+    dry = "--dry-run" in args
+    args = [a for a in args if a != "--dry-run"]
+    args = require_stopped(args)
+    if len(args) != 3:
+        die("usage : steamd-steamcfg set [--dry-run] FICHIER CLÉ VALEUR", 2)
+    sys.exit(0 if apply_one(steam_root(), args[0], args[1], args[2], dry) else 1)
+
+
+def cmd_apply(args):
+    dry = "--dry-run" in args
+    args = [a for a in args if a != "--dry-run"]
+    args = require_stopped(args)
+    root = steam_root()
+    ok = True
+    for s in args:
+        try:
+            ok &= apply_one(root, *parse_setting(s), dry=dry)
+        except VdfError as e:
+            print(f"steamd-steamcfg: {e}", file=sys.stderr)
+            ok = False
+    sys.exit(0 if ok else 1)
+
+
+def cmd_check(_args):
+    root = steam_root()
+    bad = 0
+    for rel in watched_files(root):
+        p = os.path.join(root, rel)
+        try:
+            tree, text = load(p)
+        except VdfError as e:
+            print(f"KO  {e}")
+            bad += 1
+            continue
+        same = dump(tree).rstrip("\n") == text.rstrip("\n")
+        print(f"{'OK ' if same else '~  '} {rel}{'' if same else ' (relu, mais la mise en forme différera à la réécriture)'}")
+    sys.exit(1 if bad else 0)
+
+
+COMMANDS = {
+    "snapshot": cmd_snapshot,
+    "diff": cmd_diff,
+    "get": cmd_get,
+    "set": cmd_set,
+    "apply": cmd_apply,
+    "check": cmd_check,
+}
+
+if __name__ == "__main__":
+    if len(sys.argv) < 2 or sys.argv[1] in ("-h", "--help"):
+        print(__doc__)
+        sys.exit(0)
+    cmd = COMMANDS.get(sys.argv[1])
+    if not cmd:
+        die(f"commande inconnue : {sys.argv[1]}", 2)
+    try:
+        cmd(sys.argv[2:])
+    except VdfError as e:
+        die(str(e))

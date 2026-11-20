@@ -26,6 +26,30 @@ STEAM_UI_ARG="-tenfoot"
 GAMESCOPE_EXTRA_ARGS=""
 STEAM_EXTRA_ARGS=""
 
+# --- Limite d'images par seconde (Steam headless seulement) -------------------
+# 0 = pas de limite. Mettre la même valeur que REFRESH : le GPU garde de la
+# marge pour la capture et l'encodage, et les images partent régulièrement.
+# Ne touche pas au Steam du bureau.
+FPS_LIMIT=0
+#   mangohud  (défaut) couche Vulkan MangoHud, invisible (no_display) : couvre
+#             les jeux natifs et ceux sous Proton. Paquet mangohud.
+#   dxvk      limiteurs intégrés de DXVK et VKD3D-Proton, sans MangoHud
+#             (jeux Windows sous Proton seulement).
+FPS_LIMIT_METHOD=mangohud
+
+# --- Réglages de Steam pilotés par steamd ---------------------------------------
+# Écrits dans les fichiers de Steam juste avant chaque lancement de Steam
+# headless (Steam fermé, il ne les écrase donc pas). Les fichiers étant ceux
+# de votre compte, ces réglages valent aussi pour le Steam du bureau.
+# Format : "FICHIER:CLÉ=VALEUR", FICHIER relatif à ~/.steam/steam.
+# Pour trouver la clé d'une option de l'interface de Steam :
+#   1. fermer Steam, puis : steamd-steamcfg snapshot
+#   2. ouvrir Steam, changer l'option, fermer Steam
+#   3. steamd-steamcfg diff   -> affiche les lignes à copier ici
+STEAM_SETTINGS=(
+	# "userdata/*/config/localconfig.vdf:UserLocalConfigStore/.../Option=1"
+)
+
 # --- Cohabitation avec la session de bureau -----------------------------------
 # Règle de base : une partie en cours n'est jamais interrompue. steamd ne tue
 # jamais un Steam qu'il n'a pas lancé lui-même (celui du bureau par exemple) :
