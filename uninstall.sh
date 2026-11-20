@@ -17,7 +17,7 @@ bin/steamd-setup --undo "$@"
 echo "→ unités et scripts"
 rm -f "$UNITS/steamd.service" "$UNITS/steamd-profiled.service"
 systemctl --user daemon-reload
-rm -f "$BIN/steamd-launch" "$BIN/steamd-doctor" "$BIN/steamd-setup" "$BIN/steamd-profiled" "$BIN/steamd-steamcfg"
+rm -f "$BIN/steamd-launch" "$BIN/steamd-doctor" "$BIN/steamd-setup" "$BIN/steamd-profiled" "$BIN/steamd-steamcfg" "$BIN/steamd-probe"
 rm -rf "$SHARE"
 
 echo "→ règle udev et module (sudo)"

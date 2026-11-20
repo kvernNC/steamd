@@ -8,7 +8,8 @@ license=('MIT')
 depends=('bash' 'gamescope' 'steam' 'pipewire' 'pipewire-pulse' 'wireplumber' 'systemd')
 makedepends=('gcc' 'libva')
 optdepends=('mangohud: FPS_LIMIT par la couche Vulkan (sinon DXVK/VKD3D seulement)'
-            'python: STEAM_SETTINGS et steamd-steamcfg')
+            'python: STEAM_SETTINGS et steamd-steamcfg'
+            'power-profiles-daemon: GAME_POWER_PROFILE pendant les parties')
 backup=()
 install=steamd.install
 
@@ -21,7 +22,7 @@ package() {
 
     install -Dm755 "$srcdir/libsteamd-vaapi.so" "$pkgdir/usr/lib/steamd/libsteamd-vaapi.so"
     install -Dm755 -t "$pkgdir/usr/bin" \
-        "$src"/bin/steamd-{launch,doctor,setup,profiled,steamcfg}
+        "$src"/bin/steamd-{launch,doctor,setup,profiled,steamcfg,probe}
 
     install -dm755 "$pkgdir/usr/lib/systemd/user"
     for u in "$src"/systemd/*.service; do
@@ -32,6 +33,8 @@ package() {
     install -Dm644 "$src/udev/steamd-uinput.conf" "$pkgdir/usr/lib/modules-load.d/steamd-uinput.conf"
     install -Dm644 "$src/config/steamd.conf.example" "$pkgdir/usr/share/steamd/steamd.conf.example"
     install -Dm755 "$src/deck/wake-host.sh" "$pkgdir/usr/share/steamd/deck/wake-host.sh"
+    install -Dm755 "$src/wifi/wifi-tune.sh" "$pkgdir/usr/share/steamd/wifi/wifi-tune.sh"
+    install -Dm644 "$src/polkit/60-steamd.rules" "$pkgdir/usr/share/steamd/polkit/60-steamd.rules"
     install -Dm644 "$src/README.md" "$pkgdir/usr/share/doc/steamd/README.md"
     install -Dm644 "$src/LICENSE" "$pkgdir/usr/share/licenses/steamd/LICENSE"
 }

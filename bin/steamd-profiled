@@ -2,12 +2,15 @@
 # Choisit le profil d'affichage de steamd selon le client Remote Play connecté
 # (CLIENT_PROFILES), ou selon une demande « steamd-launch --profile ». Le
 # changement redémarre Steam headless, jamais pendant une partie.
+# Pendant une partie de Steam headless : veille bloquée (INHIBIT_SLEEP_DURING_GAME)
+# et profil d'énergie GAME_POWER_PROFILE, restauré à la fin.
 #   steamd-profiled            boucle (steamd-profiled.service)
 #   steamd-profiled --clients  IP connectées au Steam de steamd et profil correspondant
 set -euo pipefail
 
 CONF="${XDG_CONFIG_HOME:-$HOME/.config}/steamd/steamd.conf"
 CLIENT_PROFILES=() PROFILE_REVERT_AFTER=600 PROFILE_POLL=5
+INHIBIT_SLEEP_DURING_GAME=true GAME_POWER_PROFILE=performance
 # shellcheck source=/dev/null
 [[ -r $CONF ]] && source "$CONF"
 
@@ -71,10 +74,65 @@ if [[ ${1:-} == --clients ]]; then
     exit 0
 fi
 
+case $GAME_POWER_PROFILE in
+    performance | balanced | power-saver | none) ;;
+    *) log "GAME_POWER_PROFILE invalide : « $GAME_POWER_PROFILE » (performance, balanced, power-saver ou none)"; exit 2 ;;
+esac
+[[ $INHIBIT_SLEEP_DURING_GAME == true || $INHIBIT_SLEEP_DURING_GAME == false ]] ||
+    { log "INHIBIT_SLEEP_DURING_GAME invalide : « $INHIBIT_SLEEP_DURING_GAME » (true ou false)"; exit 2; }
+
+inhibit_pid="" saved_profile="" in_game=false
+game_on() {
+    local msg="partie lancée"
+    if [[ $INHIBIT_SLEEP_DURING_GAME == true ]] && command -v systemd-inhibit >/dev/null; then
+        systemd-inhibit --what=sleep:idle --who=steamd --why="partie Remote Play en cours" --mode=block \
+            sleep infinity &
+        inhibit_pid=$!
+        msg+=", veille bloquée"
+    fi
+    if [[ $GAME_POWER_PROFILE != none ]] && command -v powerprofilesctl >/dev/null; then
+        saved_profile=$(powerprofilesctl get 2>/dev/null) || saved_profile=""
+        if [[ -z $saved_profile || $saved_profile == "$GAME_POWER_PROFILE" ]]; then
+            saved_profile=""
+        elif powerprofilesctl set "$GAME_POWER_PROFILE" 2>/dev/null; then
+            msg+=", profil d'énergie $saved_profile -> $GAME_POWER_PROFILE"
+        else
+            log "profil d'énergie $GAME_POWER_PROFILE refusé (règle polkit de steamd installée ? steamd-setup)"
+            saved_profile=""
+        fi
+    fi
+    log "$msg"
+}
+game_off() {
+    local msg="partie terminée"
+    if [[ -n $inhibit_pid ]]; then
+        # systemd-inhibit et son « sleep » : la veille est libérée quand ils se terminent
+        pkill -P "$inhibit_pid" 2>/dev/null || true
+        kill "$inhibit_pid" 2>/dev/null || true
+        inhibit_pid=""
+        msg+=", veille libérée"
+    fi
+    if [[ -n $saved_profile ]]; then
+        powerprofilesctl set "$saved_profile" 2>/dev/null && msg+=", profil d'énergie $saved_profile restauré"
+        saved_profile=""
+    fi
+    log "$msg"
+}
+trap 'if $in_game; then game_off; fi; exit 0' TERM INT
+
 mkdir -p "$RUNDIR"
 last_seen=$SECONDS waiting=""
 while sleep "$PROFILE_POLL"; do
-    systemctl --user -q is-active steamd.service || continue
+    active=false game=false
+    if systemctl --user -q is-active steamd.service; then
+        active=true
+        if game_running; then game=true; fi
+    fi
+    if [[ $game != "$in_game" ]]; then
+        if $game; then game_on; else game_off; fi
+        in_game=$game
+    fi
+    $active || continue
     cur=$(cat "$PROFILE_FILE" 2>/dev/null || echo default)
     target=$cur
     if [[ -s $PROFILE_REQUEST ]]; then
@@ -96,7 +154,7 @@ while sleep "$PROFILE_POLL"; do
         waiting=""
         continue
     fi
-    if game_running; then
+    if $game; then
         [[ $waiting == "$target" ]] || log "partie en cours : profil $target appliqué à la fin de la partie"
         waiting=$target
         continue

@@ -61,11 +61,16 @@ steamd/
 │   ├── steamd-doctor           # diagnostic
 │   ├── steamd-profiled         # profil d'affichage selon le client Remote Play connecté
 │   ├── steamd-steamcfg         # réglages VDF du client steamd (snapshot / diff / apply)
+│   ├── steamd-probe            # relevés à transmettre (rapport, options Remote Play, clients)
 │   └── steamd-setup            # partie utilisateur de l'installation
 ├── src/
 │   └── steamd-vaapi.c          # LD_PRELOAD : CBR + tampon d'une image pour l'encodeur VA-API
+├── polkit/
+│   └── 60-steamd.rules         # profil d'énergie pendant les parties, sans session
 ├── deck/
-│   └── wake-host.sh            # envoi du magic packet depuis le Deck
+│   └── wake-host.sh            # réveil depuis le Deck (LAN ou VPN via SSH)
+├── wifi/
+│   └── wifi-tune.sh            # réglages Wi-Fi anti-pics, Deck et PC (sans Decky)
 ├── install.sh
 └── uninstall.sh
 ```
@@ -98,6 +103,8 @@ FPS_LIMIT_METHOD=mangohud       # mangohud | dxvk
 FPS_LIMIT_TIMING=late           # late | early
 STEAM_ENV=()
 STEAM_SETTINGS=()               # "FICHIER:CLÉ=VALEUR", voir « Réglages Steam sans interface »
+INHIBIT_SLEEP_DURING_GAME=true
+GAME_POWER_PROFILE=performance  # performance | balanced | power-saver | none
 STEAM_CAPTURE=pipewire-dmabuf   # pipewire-dmabuf | pipewire | none
 GAMESCOPE_EXTRA_ARGS=""
 STEAM_EXTRA_ARGS=""
@@ -118,11 +125,77 @@ VAAPI_STRICT_RC=false
 7. **Robustesse** : `Restart=on-failure` avec un délai. Les logs sont lisibles via `journalctl --user -u steamd`.
 8. **Idempotence** : `install.sh` et `uninstall.sh` peuvent être relancés sans effet de bord. `uninstall.sh` retire tout ce que `install.sh` a ajouté (unité, règle udev, groupe en option, linger en option).
 
+
 ## Côté Steam Deck
 
 - `deck/wake-host.sh` envoie un magic packet en broadcast sur le LAN (MAC et broadcast configurables en tête de script). Sans dépendance exotique : Python stdlib ou `wakeonlan` s'il est présent.
 - L'ajouter en jeu non-Steam depuis le mode bureau, pour pouvoir le lancer depuis le mode jeu.
 - Le Pi se charge de la traduction vers la carte Ethernet du PC.
+
+Mise en place, en mode bureau sur le Deck :
+
+1. Copier `deck/wake-host.sh` (par exemple dans `~/bin/`), puis `chmod +x`.
+2. Renseigner `HOST_MAC` (la MAC qu'attend le relais) et `BROADCAST` en tête du script, ou dans `~/.config/steamd/wake-host.conf`.
+3. Facultatif : définir `HOST_ADDR` pour que le script attende que le PC réponde au ping (jusqu'à `WAIT_TIMEOUT`).
+4. Steam > *Ajouter un jeu non-Steam* > choisir le script, puis le renommer « Réveil PC ».
+
+Le mode jeu n'affiche rien : chaque envoi est journalisé dans `~/.local/state/steamd/wake-host.log`.
+
+**À travers le VPN WireGuard,** le broadcast du magic packet ne traverse pas le tunnel. `wake-host.sh` peut alors demander à une machine du LAN de l'envoyer, en SSH par clé :
+
+```bash
+WAKE_SSH="admin@192.168.88.1"
+WAKE_SSH_CMD="/tool wol interface=bridge mac={MAC}"
+WAKE_SSH_MODE=auto
+```
+
+- `WAKE_SSH` : la machine relais. L'exemple est un MikroTik ; pour le Raspberry Pi, `WAKE_SSH_CMD="wakeonlan {MAC}"`.
+- `WAKE_SSH_MODE` : en `auto`, le SSH n'est utilisé que si un tunnel WireGuard est actif. Les autres valeurs sont `always` et `never`.
+- **Clé SSH :** le mode jeu ne peut pas demander de mot de passe. Il faut donc une clé SSH du Deck autorisée sur le relais. Pour en créer une :
+
+  ```bash
+  ssh-keygen -t ed25519
+  ```
+
+  Pour l'autoriser sur le Pi :
+
+  ```bash
+  ssh-copy-id pi@192.168.88.2
+  ```
+
+  Sur le MikroTik, importe la clé publique avec `/user ssh-keys import`.
+
+## Wi-Fi : réduire les pics de latence
+
+La plupart des pics pendant un stream viennent du Wi-Fi lui-même, en particulier de son économie d'énergie : la carte s'endort entre deux paquets et se réveille en retard. `wifi/wifi-tune.sh` corrige ça **sans Decky**, en passant par NetworkManager. Il fonctionne sur le Deck (SteamOS) comme sur le PC hôte (CachyOS). Il est inspiré des réglages du plugin Decky [WifiOptimizer](https://github.com/ArcadaLabs-Jason/WifiOptimizer).
+
+Pour l'installer :
+
+```bash
+./wifi/wifi-tune.sh install
+```
+
+Pour voir l'état du Wi-Fi et des réglages :
+
+```bash
+./wifi/wifi-tune.sh status
+```
+
+| Réglage | Quand |
+|---|---|
+| Économie d'énergie du Wi-Fi désactivée (NetworkManager et `iw`) | tout de suite, puis à chaque connexion |
+| États d'économie d'énergie PCIe (ASPM) de la carte Wi-Fi désactivés | tout de suite, puis à chaque connexion |
+| Tampons réseau agrandis (rafales du stream), file d'émission allongée | tout de suite, puis à chaque connexion |
+| Options du pilote : rtw88 du Deck LCD, rtw89, mt7921e, iwlwifi. Rien à faire pour ath11k du Deck OLED | au prochain démarrage |
+
+- **Réapplication automatique :** un script de NetworkManager remet ces réglages à chaque connexion Wi-Fi, y compris après une mise en veille.
+- **Mises à jour de SteamOS :** les fichiers sont dans `/etc`, conservé lors des mises à jour.
+- **Mot de passe :** sur le Deck, `sudo` demande que le mot de passe de l'utilisateur `deck` soit défini (`passwd`).
+- **Retour en arrière :** `./wifi/wifi-tune.sh uninstall` retire tout et restaure les tampons d'origine. Un redémarrage revient complètement aux réglages d'origine.
+
+En option, `./wifi/wifi-tune.sh lock-ap` verrouille le réseau Wi-Fi actuel sur son point d'accès actuel. Le Deck ne cherche alors plus d'autre point d'accès en arrière-plan, ce qui supprime une autre source de pics. La contrepartie : si ce point d'accès disparaît (autre pièce, autre bâtiment), le Deck ne se reconnecte plus à ce réseau. Pour défaire le verrouillage : `unlock-ap`. C'est à réserver au réseau de la maison ; à éviter sur un réseau d'entreprise avec plusieurs bornes.
+
+Le plugin propose d'autres réglages que je n'ai pas repris, parce qu'ils peuvent empêcher la connexion ou n'aident pas le stream : bande forcée, DNS, IPv6, WPA2, changement de backend Wi-Fi, file d'attente CAKE.
 
 ## Prérequis manuels (une seule fois)
 
@@ -149,6 +222,7 @@ Côté bureau : désactiver Remote Play (Paramètres > Remote Play) et les trans
 | 5 | Session de bureau ouverte, Steam du bureau lancé | Les deux Steam tournent. Le Deck streame depuis steamd sans gêner le bureau |
 | 6 | Jeu lancé depuis le Deck pendant que le bureau est utilisé | Le bureau n'est pas modifié (ni fenêtre ni changement de résolution) |
 | 7 | PC éteint, raccourci de réveil sur le Deck | Le PC démarre et Remote Play est disponible en moins de 60 s |
+| 7b | PC éteint, Deck en VPN WireGuard avec `WAKE_SSH` configuré | Le magic packet part du relais (journal `wake-host.log`) et le PC démarre |
 | 8 | `steamd-doctor` | Rapport lisible, chaque point marqué OK ou KO avec une piste de correction |
 | 9 | Stream depuis la TV avec son entrée `CLIENT_PROFILES`, puis `steamd-profiled --clients` | L'IP de la TV apparaît. Steam headless redémarre dans son profil, et la TV se reconnecte à cette résolution. Dix minutes après, retour au profil par défaut, sauf pendant une partie |
 
@@ -243,6 +317,15 @@ systemctl --user start steamd
 
 On colle ensuite la ligne dans `STEAM_SETTINGS`. `steamd-launch` l'applique avant chaque démarrage, et `steamd-doctor` compare la valeur actuelle à celle attendue. Autres commandes : `get FICHIER CLÉ`, `set [--dry-run] FICHIER CLÉ VALEUR`, `apply`, `check` (relecture à l'identique). Une sauvegarde `.steamd.bak` est faite avant chaque écriture. `ENCODER` reste géré à part, sans chemin de clé à connaître.
 
+### Pendant une partie
+
+`steamd-profiled` repère les parties de Steam headless (`reaper SteamLaunch AppId=` dans le cgroup de `steamd.service`) :
+
+- `INHIBIT_SLEEP_DURING_GAME=true` : la veille est bloquée pendant la partie (`systemd-inhibit`, visible avec `systemd-inhibit --list`).
+- `GAME_POWER_PROFILE=performance` : le profil d'énergie de power-profiles-daemon passe à cette valeur, puis le profil précédent est restauré à la fin, même si le service s'arrête en pleine partie. Sans session ouverte, polkit exige une règle : `steamd-setup` installe `/etc/polkit-1/rules.d/60-steamd.rules`, et `steamd-setup --undo` la retire. `none` désactive ce réglage.
+
+Une partie lancée depuis le Steam du bureau n'est pas concernée.
+
 ### Cohabitation avec le Steam du bureau
 
 steamd et le Steam du bureau sont deux clients indépendants. On peut ouvrir ou fermer sa session, et lancer ou quitter le Steam du bureau, sans effet sur steamd.
@@ -253,8 +336,15 @@ Le compte Steam est le même : un seul jeu peut tourner à la fois. Si un jeu es
 
 ```bash
 steamd-doctor
-journalctl --user -u steamd -f
+journalctl --user -u steamd -u steamd-profiled -f
 ```
+
+`steamd-probe` produit des relevés à transmettre tels quels (fichiers `~/steamd-*.txt`) :
+
+- `rapport` : versions, `steamd-doctor`, options de gamescope, encodeur et `libsteamd-vaapi`, audio, couches Vulkan, Proton, partie en cours, Wi-Fi, journaux.
+- `options-remoteplay` : relevé guidé des clés des options Remote Play du client steamd. Il arrête steamd, prend un snapshot, ouvre `steamd-launch --setup`, fait le diff, puis relance steamd. Le Steam du bureau n'est pas touché.
+- `clients` : suivi en direct des IP connectées au Steam de steamd et du profil choisi.
+- `journal-stream` : extrait du journal de streaming (client, résolution, codec, HDR).
 
 ### Désinstallation
 
@@ -269,7 +359,7 @@ sudo pacman -R steamd
 
 ### Steam Deck
 
-Renseigner `MAC` (et au besoin `BROADCAST`) en tête de `deck/wake-host.sh`. Copier le script sur le Deck, le rendre exécutable, puis l'ajouter comme jeu non-Steam depuis le mode bureau.
+Voir « Côté Steam Deck » : `deck/wake-host.sh` (aussi installé dans `~/.local/share/steamd/deck/` ou `/usr/share/steamd/deck/`) et `wifi/wifi-tune.sh`.
 
 ## Licence
 

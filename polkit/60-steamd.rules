@@ -1,0 +1,13 @@
+// steamd : autorise l'utilisateur à changer de profil d'énergie pendant une
+// partie Remote Play (GAME_POWER_PROFILE), même sans session ouverte : sans
+// cette règle, polkit demande un mot de passe administrateur.
+// @USER@ est remplacé par steamd-setup.
+polkit.addRule(function (action, subject) {
+    var actions = [
+        "org.freedesktop.UPower.PowerProfiles.switch-profile",
+        "net.hadess.PowerProfiles.switch-profile"
+    ];
+    if (subject.user == "@USER@" && actions.indexOf(action.id) >= 0) {
+        return polkit.Result.YES;
+    }
+});

@@ -65,9 +65,16 @@ check "steamd.service actif" "journalctl --user -u steamd -e" systemctl --user -
 launch=$(command -v steamd-launch || echo "$(dirname "$(readlink -f "$0")")/steamd-launch")
 check "profils d'affichage valides" "journalctl --user -u steamd -e (ligne CLIENT_PROFILES ou valeur invalide)" "$launch" --profiles
 "$launch" --profiles 2>/dev/null | sed 's/^/     /'
-if ((${#CLIENT_PROFILES[@]})); then
-    check "steamd-profiled.service actif (CLIENT_PROFILES)" "systemctl --user enable --now steamd-profiled.service" \
-        systemctl --user -q is-active steamd-profiled.service
+check "steamd-profiled.service actif (profils, veille et énergie pendant les parties)" \
+    "systemctl --user enable --now steamd-profiled.service ; journalctl --user -u steamd-profiled -e" \
+    systemctl --user -q is-active steamd-profiled.service
+if [[ ${GAME_POWER_PROFILE:-performance} != none ]]; then
+    if command -v powerprofilesctl >/dev/null; then
+        ok "power-profiles-daemon présent (GAME_POWER_PROFILE=${GAME_POWER_PROFILE:-performance}, actuel : $(powerprofilesctl get 2>/dev/null || echo ?))"
+        check "règle polkit de steamd (profil d'énergie sans session)" "steamd-setup" test -r /etc/polkit-1/rules.d/60-steamd.rules
+    else
+        info "powerprofilesctl absent : GAME_POWER_PROFILE sans effet (sudo pacman -S power-profiles-daemon)"
+    fi
 fi
 if [[ ${AUDIO_ISOLATE:-false} == true ]]; then
     sink=${AUDIO_SINK:-steamd}

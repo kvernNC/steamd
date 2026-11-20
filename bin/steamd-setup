@@ -34,6 +34,15 @@ if [[ ${1:-} != --undo ]]; then
         reboot_needed=true
     fi
 
+    for rules in "${XDG_DATA_HOME:-$HOME/.local/share}/steamd/polkit/60-steamd.rules" /usr/share/steamd/polkit/60-steamd.rules; do
+        if [[ -r $rules ]]; then
+            echo "→ règle polkit : profil d'énergie pendant les parties (sudo)"
+            sed "s/@USER@/$USER/" "$rules" | sudo tee /etc/polkit-1/rules.d/60-steamd.rules >/dev/null
+            sudo chmod 644 /etc/polkit-1/rules.d/60-steamd.rules
+            break
+        fi
+    done
+
     echo "→ linger (sudo)"
     sudo loginctl enable-linger "$USER"
 
@@ -74,6 +83,10 @@ if command -v pactl >/dev/null; then
 fi
 systemctl --user reset-failed steamd.service 2>/dev/null || true
 
+if [[ -e /etc/polkit-1/rules.d/60-steamd.rules ]]; then
+    echo "→ règle polkit retirée (sudo)"
+    sudo rm -f /etc/polkit-1/rules.d/60-steamd.rules
+fi
 if $remove_group && in_group; then
     echo "→ retrait du groupe input (sudo)"
     sudo gpasswd -d "$USER" input

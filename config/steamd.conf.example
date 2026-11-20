@@ -34,6 +34,11 @@ STEAM_ENV=(
     # "DXVK_HUD=fps"
 )
 
+# Pendant une partie de Steam headless (steamd-profiled) : veille bloquée, et profil
+# d'énergie de power-profiles-daemon (performance | balanced | power-saver | none), restauré à la fin.
+INHIBIT_SLEEP_DURING_GAME=true
+GAME_POWER_PROFILE=performance
+
 # Réglages du client Steam de steamd, écrits juste avant son démarrage (Steam fermé) :
 #   "FICHIER:CLÉ=VALEUR", FICHIER relatif à son dossier Steam (jokers permis), CLÉ en chemin « / ».
 # Ne jamais deviner une clé : la relever avec steamd-steamcfg snapshot / diff (voir README).

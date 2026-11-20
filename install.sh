@@ -14,8 +14,11 @@ UNITS="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
 SHARE="${XDG_DATA_HOME:-$HOME/.local/share}/steamd"
 
 echo "→ scripts dans $BIN"
-install -Dm755 -t "$BIN" bin/steamd-launch bin/steamd-doctor bin/steamd-setup bin/steamd-profiled bin/steamd-steamcfg
+install -Dm755 -t "$BIN" bin/steamd-launch bin/steamd-doctor bin/steamd-setup bin/steamd-profiled bin/steamd-steamcfg bin/steamd-probe
 install -Dm644 config/steamd.conf.example "$SHARE/steamd.conf.example"
+install -Dm644 polkit/60-steamd.rules "$SHARE/polkit/60-steamd.rules"
+install -Dm755 wifi/wifi-tune.sh "$SHARE/wifi/wifi-tune.sh"
+install -Dm755 deck/wake-host.sh "$SHARE/deck/wake-host.sh"
 if cc -O2 -Wall -fPIC -shared -o "$SHARE/libsteamd-vaapi.so" src/steamd-vaapi.c -ldl -lpthread; then
     echo "→ libsteamd-vaapi.so compilée (VAAPI_STRICT_RC)"
 else
