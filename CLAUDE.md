@@ -148,13 +148,29 @@ Tout le reste n'a été testé qu'avec les faux de `tests/` : **à vérifier en 
      par les serveurs de Valve.
    - Le rendu 4K natif est hors de portée du PC : distinguer sortie
      (`-W/-H`, peu coûteuse) et rendu (`-w/-h`, ex. 1440p + FSR gamescope).
-   - Plan retenu si l'option Steam ne suffit pas : **profils par client**
-     (résolution de sortie, de rendu et fréquence). Le Deck annonce son
-     profil au réveil (`wake-host.sh`, en SSH ou par un message réseau)
-     pour éviter toute coupure. Les autres clients sont reconnus par leur IP
-     à la connexion (LAN et IP WireGuard). En cas de changement de client,
-     gamescope est relancé et la première connexion échoue (reconnexion
-     30 à 60 s plus tard).
+   - Plan retenu si l'option Steam ne suffit pas (choix de l'utilisateur) :
+     **un profil par défaut + des exceptions par IP**. Le profil par défaut
+     (`WIDTH/HEIGHT/REFRESH/HDR`) est celui du Deck : aucune annonce ni
+     coupure pour lui, au LAN comme en VPN. Seuls certains clients (la TV)
+     ont une exception :
+     ```
+     CLIENT_PROFILES=(
+       "192.168.88.50 OUTPUT=3840x2160 RENDER=2560x1440 REFRESH=60 HDR=true"
+     )
+     ```
+     (clés absentes = valeurs par défaut). Détection : IP du pair connecté
+     au Steam headless (ex. `ss` sur les ports Remote Play du processus,
+     ou conntrack). Changement de profil = relance de gamescope, seulement
+     sans partie en cours ; la première connexion du client échoue, il se
+     reconnecte 30 à 60 s plus tard. Retour au profil par défaut après
+     `PROFILE_REVERT_AFTER` sans client connecté, pour que le Deck trouve
+     son profil en place.
+   - HDR par profil (`HDR=true|false`, défaut false) : chaîne complète à
+     valider avant de garder l'option : `DXVK_HDR=1` (jeu, Proton-CachyOS),
+     `--hdr-enabled` de gamescope en headless, capture 10 bits (les stats
+     actuelles montrent `NV12`, 8 bits, donc SDR), HEVC Main10 VA-API,
+     prise en charge du HDR par Remote Play avec un hôte Linux, et par le
+     client Tizen. Si le format reste NV12 : pas de HDR, retirer l'option.
    - Règle 2 : ne jamais relancer gamescope pendant une partie.
    - Client TV : TV Samsung avec Steam Link pour Tizen
      (https://github.com/pebeto/tizen-steam-link), portage non officiel,
@@ -162,9 +178,7 @@ Tout le reste n'a été testé qu'avec les faux de `tests/` : **à vérifier en 
      sur le MikroTik). Limites de décodage inconnues (4K ? HEVC ?) : lire la
      résolution et le codec négociés dans l'affichage des performances de
      Steam Link sur la TV avant de fixer son profil.
-   - Forme envisagée (non implémentée) :
-     `CLIENT_PROFILES=("deck|1280x800|1280x800|90" "192.168.88.50|3840x2160|2560x1440|60")`
-     (identifiant ou IP | sortie | rendu | fréquence).
+
 
 ## Propositions faites, sans réponse de l'utilisateur
 
