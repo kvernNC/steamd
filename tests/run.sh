@@ -37,6 +37,7 @@ ko() {
 }
 check() { if eval "$2"; then ok "$1"; else ko "$1 [$2]"; fi; }
 state() { head -1 "$STATE" 2>/dev/null; }
+why() { sed -n 2p "$STATE" 2>/dev/null; }
 
 # Attend qu'une condition devienne vraie (max $2 secondes).
 wait_for() {
@@ -51,7 +52,7 @@ wait_for() {
 reset() {
 	stop_sup
 	pkill -f "fake/steam -tenfoot" 2>/dev/null
-	rm -f "$FAKE"/{session,game,click,events,ppd,sup.pid} "$STATE"
+	rm -f "$FAKE"/{session,game,click,events,ppd,sup.pid,peers} "$STATE" "$XDG_RUNTIME_DIR/steamd/profile-request"
 	printf 'POLL_INTERVAL=1\nSTOP_TIMEOUT=3\nRESTART_DELAY=1\nHANDOVER_DELAY=2\n%s\n' "${1:-}" >"$STEAMD_CONF"
 }
 start_sup() {
@@ -205,7 +206,36 @@ t_steamcfg() {
 	check "chemin hors de Steam refusé" '! python3 "$CFG" get ../../etc/passwd x >/dev/null 2>&1'
 }
 
-ALL=(print start_stop login foreign busy handover steamcfg idle)
+t_profiles() {
+	echo "profiles : profil par défaut + exception par IP"
+	reset 'REFRESH=90
+PROFILE_REVERT_AFTER=4
+CLIENT_PROFILES=("192.168.88.50 OUTPUT=3840x2160 RENDER=2560x1440 REFRESH=60")'
+	start_sup
+	check "démarrage sur le profil par défaut" '[[ $(why) == *"profil default"* ]] && pgrep -f "fake/gamescope -W 1280 -H 800 .* -r 90" >/dev/null'
+	echo 192.168.88.50 >"$FAKE/peers"
+	check "connexion de la TV : profil TV" 'wait_for "[[ \$(why) == *\"profil 192.168.88.50\"* ]]" 10'
+	check "gamescope relancé en 3840x2160, rendu 2560x1440, 60 Hz" 'pgrep -f "fake/gamescope -W 3840 -H 2160 -w 2560 -h 1440 -r 60" >/dev/null'
+	touch "$FAKE/game"
+	wait_for 'game_alive' 5
+	: >"$FAKE/peers"
+	sleep 6
+	check "pas de retour au défaut pendant une partie" '[[ $(why) == *"profil 192.168.88.50"* ]] && game_alive'
+	rm -f "$FAKE/game"
+	check "retour au défaut après PROFILE_REVERT_AFTER sans la TV" 'wait_for "[[ \$(why) == *\"profil default\"* ]]" 15'
+	touch "$FAKE/game"
+	wait_for 'game_alive' 5
+	echo 192.168.88.50 >"$FAKE/peers"
+	sleep 3
+	check "pas de changement si la TV arrive pendant une partie" '[[ $(why) == *"profil default"* ]] && game_alive'
+	rm -f "$FAKE/game" "$FAKE/peers"
+	"$LAUNCH" --profile 192.168.88.50 >/dev/null
+	check "--profile : changement manuel" 'wait_for "[[ \$(why) == *\"profil 192.168.88.50\"* ]]" 10'
+	"$LAUNCH" --profile inconnu >/dev/null 2>&1
+	check "--profile inconnu refusé (code 2)" '[[ $? == 2 ]]'
+}
+
+ALL=(print start_stop login foreign busy handover profiles steamcfg idle)
 for t in "${@:-${ALL[@]}}"; do
 	"t_$t"
 	echo

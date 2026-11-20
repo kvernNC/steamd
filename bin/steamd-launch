@@ -3,7 +3,11 @@
 # gamescope headless, pour Steam Remote Play.
 #
 #   steamd-launch           boucle de supervision (ExecStart de steamd.service)
-#   steamd-launch --print   affiche la commande gamescope, sans l'exécuter
+#   steamd-launch --print [PROFIL]  affiche la commande gamescope (profil par
+#                           défaut, ou celui d'une IP de CLIENT_PROFILES)
+#   steamd-launch --clients affiche les IP connectées au Steam headless et le
+#                           profil correspondant
+#   steamd-launch --profile PROFIL|default  demande un changement de profil
 #   steamd-launch --status  affiche l'état courant (running, standby, ...)
 #   steamd-launch --apply-settings  applique STEAM_SETTINGS (Steam doit être fermé)
 #   steamd-launch --handover  depuis le bureau : ferme Steam headless (et la
@@ -50,6 +54,7 @@ CONF="${STEAMD_CONF:-${XDG_CONFIG_HOME:-$HOME/.config}/steamd/steamd.conf}"
 RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$UID}/steamd"
 STATE_FILE="$RUNTIME_DIR/state"
 HANDOVER_FILE="$RUNTIME_DIR/handover"
+PROFILE_REQUEST_FILE="$RUNTIME_DIR/profile-request"
 
 # --- Valeurs par défaut (écrasées par la conf) --------------------------------
 WIDTH=1280
@@ -57,6 +62,9 @@ HEIGHT=800
 REFRESH=60
 APP_WIDTH=""
 APP_HEIGHT=""
+HDR=false
+CLIENT_PROFILES=()
+PROFILE_REVERT_AFTER=600
 STEAM_CAPTURE=pipewire-dmabuf
 STEAM_UI_ARG="-tenfoot"
 GAMESCOPE_EXTRA_ARGS=""
@@ -95,8 +103,8 @@ is_uint() { [[ $1 =~ ^[0-9]+$ ]]; }
 
 validate_conf() {
 	local v
-	[[ $FPS_LIMIT == auto ]] && FPS_LIMIT=$REFRESH
-	for v in WIDTH HEIGHT REFRESH POLL_INTERVAL RESTART_DELAY STOP_TIMEOUT HANDOVER_DELAY IDLE_TIMEOUT FPS_LIMIT; do
+	[[ $FPS_LIMIT == auto ]] || is_uint "$FPS_LIMIT" || die $EXIT_CONFIG "FPS_LIMIT doit valoir auto ou un entier (valeur : '$FPS_LIMIT')"
+	for v in WIDTH HEIGHT REFRESH POLL_INTERVAL RESTART_DELAY STOP_TIMEOUT HANDOVER_DELAY IDLE_TIMEOUT PROFILE_REVERT_AFTER; do
 		is_uint "${!v}" || die $EXIT_CONFIG "$v doit être un entier (valeur : '${!v}')"
 	done
 	((POLL_INTERVAL >= 1)) || die $EXIT_CONFIG "POLL_INTERVAL doit être >= 1"
@@ -120,7 +128,17 @@ validate_conf() {
 	mangohud | dxvk) ;;
 	*) die $EXIT_CONFIG "FPS_LIMIT_METHOD doit valoir mangohud ou dxvk (valeur : '$FPS_LIMIT_METHOD')" ;;
 	esac
-	if ((FPS_LIMIT > 0)) && [[ $FPS_LIMIT_METHOD == mangohud ]] && ! mangohud_installed; then
+	case $HDR in
+	true | false) ;;
+	*) die $EXIT_CONFIG "HDR doit valoir true ou false (valeur : '$HDR')" ;;
+	esac
+	local entry
+	for entry in "${CLIENT_PROFILES[@]}"; do
+		parse_profile "$entry" >/dev/null || die $EXIT_CONFIG "CLIENT_PROFILES : entrée invalide '$entry' ($PARSE_ERROR)"
+	done
+	# L'analyse ci-dessus a rempli P_* : on repart du profil par défaut.
+	default_profile
+	if [[ $FPS_LIMIT != 0 ]] && [[ $FPS_LIMIT_METHOD == mangohud ]] && ! mangohud_installed; then
 		log "attention : MangoHud absent (sudo pacman -S mangohud), limite d'images par seconde via DXVK et VKD3D-Proton seulement (jeux Windows sous Proton)"
 		FPS_LIMIT_METHOD=dxvk
 	fi
@@ -155,19 +173,147 @@ mangohud_installed() {
 		compgen -G "$HOME/.local/share/vulkan/implicit_layer.d/MangoHud*.json" >/dev/null
 }
 
+# --- Profils de résolution ----------------------------------------------------
+# Profil par défaut : WIDTH, HEIGHT, APP_WIDTH, APP_HEIGHT, REFRESH, HDR.
+# CLIENT_PROFILES : exceptions pour certaines IP, par exemple
+#   "192.168.88.50 OUTPUT=3840x2160 RENDER=2560x1440 REFRESH=60 HDR=true"
+# Premier mot : une ou plusieurs IP séparées par des virgules (le nom du
+# profil est la première). Clés absentes = valeurs du profil par défaut.
+# Clés : OUTPUT (sortie gamescope -W/-H), RENDER (rendu du jeu -w/-h),
+# REFRESH, HDR, FPS_LIMIT.
+PARSE_ERROR=""
+P_NAME=default P_W=0 P_H=0 P_AW=0 P_AH=0 P_R=0 P_HDR=false P_FPS=auto
+
+# Analyse une entrée ; remplit P_* (en partant du défaut). Code 1 si invalide.
+parse_profile() {
+	local entry=$1 kv k v
+	local -a words
+	read -ra words <<<"$entry"
+	PARSE_ERROR=""
+	if ((${#words[@]} == 0)) || [[ ! ${words[0]} =~ ^[0-9A-Fa-f.:,]+$ ]]; then
+		PARSE_ERROR="le premier mot doit être une IP (ou plusieurs, séparées par des virgules)"
+		return 1
+	fi
+	default_profile
+	P_NAME=${words[0]%%,*}
+	for kv in "${words[@]:1}"; do
+		k=${kv%%=*} v=${kv#*=}
+		[[ $kv == *=* ]] || {
+			PARSE_ERROR="« $kv » n'est pas de la forme CLÉ=VALEUR"
+			return 1
+		}
+		case $k in
+		OUTPUT | RENDER)
+			[[ $v =~ ^([0-9]+)x([0-9]+)$ ]] || {
+				PARSE_ERROR="$k attend LARGEURxHAUTEUR (valeur : '$v')"
+				return 1
+			}
+			if [[ $k == OUTPUT ]]; then
+				P_W=${BASH_REMATCH[1]} P_H=${BASH_REMATCH[2]}
+			else
+				P_AW=${BASH_REMATCH[1]} P_AH=${BASH_REMATCH[2]}
+			fi
+			;;
+		REFRESH)
+			is_uint "$v" || {
+				PARSE_ERROR="REFRESH attend un entier (valeur : '$v')"
+				return 1
+			}
+			P_R=$v
+			;;
+		HDR)
+			[[ $v == true || $v == false ]] || {
+				PARSE_ERROR="HDR attend true ou false (valeur : '$v')"
+				return 1
+			}
+			P_HDR=$v
+			;;
+		FPS_LIMIT)
+			[[ $v == auto ]] || is_uint "$v" || {
+				PARSE_ERROR="FPS_LIMIT attend auto ou un entier (valeur : '$v')"
+				return 1
+			}
+			P_FPS=$v
+			;;
+		*)
+			PARSE_ERROR="clé inconnue « $k » (OUTPUT, RENDER, REFRESH, HDR, FPS_LIMIT)"
+			return 1
+			;;
+		esac
+	done
+	# Un profil qui change la sortie sans préciser le rendu garde le même
+	# rendu que la sortie.
+	[[ $entry == *RENDER=* || $entry != *OUTPUT=* ]] || {
+		P_AW=$P_W
+		P_AH=$P_H
+	}
+	echo "$P_NAME"
+}
+
+default_profile() {
+	P_NAME=default
+	P_W=$WIDTH P_H=$HEIGHT
+	P_AW=${APP_WIDTH:-$WIDTH} P_AH=${APP_HEIGHT:-$HEIGHT}
+	P_R=$REFRESH P_HDR=$HDR P_FPS=$FPS_LIMIT
+}
+
+# Active un profil par son nom (« default » ou la première IP d'une entrée).
+select_profile() {
+	local entry
+	if [[ $1 == default ]]; then
+		default_profile
+		return 0
+	fi
+	for entry in "${CLIENT_PROFILES[@]}"; do
+		read -r first _ <<<"$entry"
+		if [[ ,$first, == *",$1,"* ]]; then
+			parse_profile "$entry" >/dev/null
+			return 0
+		fi
+	done
+	return 1
+}
+
+# Nom du profil correspondant à l'une des IP données, ou rien.
+profile_for_ips() {
+	local ip entry first
+	for entry in "${CLIENT_PROFILES[@]}"; do
+		read -r first _ <<<"$entry"
+		for ip in "$@"; do
+			[[ ,$first, == *",$ip,"* ]] && {
+				echo "${first%%,*}"
+				return 0
+			}
+		done
+	done
+	return 0
+}
+
+# IP des appareils connectés aux sockets de Steam (TCP et UDP « connectés »),
+# hors boucle locale. On y trouve aussi les serveurs de Valve : seules les IP
+# listées dans CLIENT_PROFILES ont un effet.
+client_peers() {
+	ss -Htunp state established 2>/dev/null |
+		awk '/users:\(\("steam"/ { for (i = 1; i <= NF; i++) if ($i ~ /^users:/) print $(i - 1) }' |
+		sed -E 's/^\[//; s/\]?:[0-9*]+$//; s/^::ffff://' |
+		grep -vE '^(127\.|::1$|$)' | sort -u
+}
+
 build_command() {
 	local -a gs_extra st_extra steam_ui
 	read -ra gs_extra <<<"$GAMESCOPE_EXTRA_ARGS"
 	read -ra st_extra <<<"$STEAM_EXTRA_ARGS"
 	read -ra steam_ui <<<"$STEAM_UI_ARG"
 
+	local fps=$P_FPS
+	[[ $fps == auto ]] && fps=$P_R
 	CMD=("$GAMESCOPE_BIN"
-		-W "$WIDTH" -H "$HEIGHT"
-		-w "${APP_WIDTH:-$WIDTH}" -h "${APP_HEIGHT:-$HEIGHT}"
-		-r "$REFRESH"
-		--backend headless --steam
-		"${gs_extra[@]}"
-		--)
+		-W "$P_W" -H "$P_H"
+		-w "$P_AW" -h "$P_AH"
+		-r "$P_R"
+		--backend headless --steam)
+	[[ $P_HDR == true ]] && CMD+=(--hdr-enabled)
+	CMD+=("${gs_extra[@]}" --)
 	# Environnement des jeux : donné à Steam headless seulement (et donc à
 	# tous ses jeux), pas à gamescope ni au Steam du bureau. Les options de
 	# lancement d'un jeu dans Steam (VAR=... %command%) restent prioritaires.
@@ -188,12 +334,14 @@ build_command() {
 	# Limite d'images par seconde. mangohud : couche Vulkan, couvre les jeux
 	# natifs Vulkan et ceux sous Proton (DXVK et VKD3D-Proton passent par
 	# Vulkan). dxvk : limiteurs intégrés de DXVK et VKD3D-Proton.
-	if ((FPS_LIMIT > 0)); then
+	if ((fps > 0)); then
 		case $FPS_LIMIT_METHOD in
-		mangohud) envs+=(MANGOHUD=1 "MANGOHUD_CONFIG=fps_limit=$FPS_LIMIT,fps_limit_method=$FPS_LIMIT_TIMING,no_display") ;;
-		dxvk) envs+=("DXVK_FRAME_RATE=$FPS_LIMIT" "VKD3D_FRAME_RATE=$FPS_LIMIT") ;;
+		mangohud) envs+=(MANGOHUD=1 "MANGOHUD_CONFIG=fps_limit=$fps,fps_limit_method=$FPS_LIMIT_TIMING,no_display") ;;
+		dxvk) envs+=("DXVK_FRAME_RATE=$fps" "VKD3D_FRAME_RATE=$fps") ;;
 		esac
 	fi
+	# HDR : à valider de bout en bout (capture 10 bits, Remote Play, client).
+	[[ $P_HDR == true ]] && envs+=("DXVK_HDR=1")
 	# Variables de l'utilisateur en dernier : elles l'emportent.
 	envs+=("${STEAM_ENV[@]}")
 	((${#envs[@]} == 0)) || CMD+=(env "${envs[@]}")
@@ -529,6 +677,8 @@ nap() {
 supervise() {
 	local fails=0 delay=0 game="" name="" last_id="" last_game=0 desktop_waiting=0
 	local idle=0 last_tick=$SECONDS dt
+	local want target prev last_profile_seen=$SECONDS
+	local -a peers
 	trap on_term TERM INT
 	trap on_usr1 USR1
 	trap 'close_prompt; inhibit_off; power_off; set_state stopped "service arrêté"' EXIT
@@ -613,16 +763,47 @@ supervise() {
 			rm -f "$HANDOVER_FILE"
 			close_prompt
 			if child_alive; then
+				# Profil de résolution : selon les IP connectées (CLIENT_PROFILES)
+				# ou une demande explicite (--profile). Changement seulement sans
+				# partie en cours (règle 2) : gamescope et Steam sont relancés.
+				target=$P_NAME
+				if [[ -s $PROFILE_REQUEST_FILE ]]; then
+					target=$(head -1 "$PROFILE_REQUEST_FILE")
+					[[ -z $game ]] && rm -f "$PROFILE_REQUEST_FILE"
+					last_profile_seen=$SECONDS
+				elif ((${#CLIENT_PROFILES[@]})); then
+					mapfile -t peers < <(client_peers)
+					want=$(profile_for_ips "${peers[@]}")
+					if [[ -n $want ]]; then
+						target=$want
+						last_profile_seen=$SECONDS
+					elif [[ $P_NAME != default ]] && ((SECONDS - last_profile_seen >= PROFILE_REVERT_AFTER)); then
+						target=default
+					fi
+				fi
+				if [[ $target != "$P_NAME" && -z $game ]]; then
+					prev=$P_NAME
+					if select_profile "$target"; then
+						log "changement de profil : $target (${P_W}x${P_H}, rendu ${P_AW}x${P_AH}, ${P_R} Hz, HDR $P_HDR)"
+						stop_child "changement de profil de résolution"
+						build_command
+						start_child
+					else
+						log "profil inconnu : $target (ignoré)"
+						rm -f "$PROFILE_REQUEST_FILE"
+						select_profile "$prev" || select_profile default
+					fi
+				fi
 				if [[ -n $game ]]; then
-					set_state running "partie Remote Play en cours : $name"
+					set_state running "partie Remote Play en cours : $name (profil $P_NAME)"
 				else
-					set_state running "Steam headless actif"
+					set_state running "Steam headless actif (profil $P_NAME)"
 				fi
 			elif steam_running; then
 				set_state standby "un autre Steam tourne déjà pour $USER : il n'est pas interrompu"
 			else
 				start_child
-				set_state running "Steam headless actif"
+				set_state running "Steam headless actif (profil $P_NAME)"
 			fi
 
 			# Inactivité : Steam headless sans partie et personne de connecté.
@@ -653,9 +834,38 @@ case ${1:-} in
 --print)
 	load_conf
 	validate_conf
+	if [[ -n ${2:-} ]]; then
+		select_profile "$2" || die $EXIT_CONFIG "profil inconnu : $2 (default ou première IP d'une entrée de CLIENT_PROFILES)"
+	fi
 	build_command
 	printf '%q ' "${CMD[@]}"
 	echo
+	exit 0
+	;;
+--clients)
+	load_conf
+	validate_conf
+	mapfile -t peers < <(client_peers)
+	if ((${#peers[@]} == 0)); then
+		echo "Aucune connexion établie par Steam (Steam headless arrêté, ou aucun client connecté)."
+	else
+		echo "IP connectées aux sockets de Steam (les serveurs de Valve en font partie) :"
+		printf '  %s\n' "${peers[@]}"
+	fi
+	want=$(profile_for_ips "${peers[@]}")
+	echo "Profil correspondant : ${want:-default}"
+	echo "Profil actif : $(sed -n 's/.*(profil \(.*\))$/\1/p' "$STATE_FILE" 2>/dev/null | head -1)"
+	exit 0
+	;;
+--profile)
+	[[ -n ${2:-} ]] || die $EXIT_CONFIG "usage : steamd-launch --profile default|IP"
+	load_conf
+	validate_conf
+	select_profile "$2" || die $EXIT_CONFIG "profil inconnu : $2"
+	mkdir -p "$RUNTIME_DIR"
+	echo "$2" >"$PROFILE_REQUEST_FILE"
+	systemctl --user kill --kill-whom=main -s USR1 steamd.service 2>/dev/null || true
+	echo "Demande envoyée : profil $2 (appliqué sans partie en cours ; Steam headless redémarre)."
 	exit 0
 	;;
 --apply-settings)
@@ -677,7 +887,7 @@ case ${1:-} in
 	exit 0
 	;;
 "") ;;
-*) die $EXIT_CONFIG "option inconnue : $1 (attendu : --print, --status, --handover, --apply-settings)" ;;
+*) die $EXIT_CONFIG "option inconnue : $1 (attendu : --print, --clients, --profile, --status, --handover, --apply-settings)" ;;
 esac
 
 load_conf
