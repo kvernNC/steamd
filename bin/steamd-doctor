@@ -57,6 +57,16 @@ check "gestionnaire systemd utilisateur dans le groupe input" "redémarrer le PC
 echo "== Service"
 check "steamd.service activé" "systemctl --user enable steamd.service" systemctl --user -q is-enabled steamd.service
 check "steamd.service actif" "journalctl --user -u steamd -e" systemctl --user -q is-active steamd.service
+if [[ ${AUDIO_ISOLATE:-false} == true ]]; then
+    sink=${AUDIO_SINK:-steamd}
+    check "sortie audio $sink présente (AUDIO_ISOLATE)" "systemctl --user restart steamd ; pactl list short sinks" \
+        bash -c 'pactl list short sinks | awk "{print \$2}" | grep -qx "$1"' _ "$sink"
+    check "sortie audio du bureau différente de $sink" "pactl set-default-sink <ta sortie>" \
+        bash -c '[[ $(pactl get-default-sink) != "$1" ]]' _ "$sink"
+    sp=$(pgrep -u "$UID" -x steam | head -n1)
+    check "Steam de steamd envoyé sur $sink" "systemctl --user restart steamd" \
+        bash -c 'tr "\0" "\n" < "/proc/$1/environ" | grep -qx "PULSE_SINK=$2"' _ "${sp:-0}" "$sink"
+fi
 if [[ ${VAAPI_STRICT_RC:-false} == true ]]; then
     sp=$(pgrep -u "$UID" -x steam | head -n1)
     check "libsteamd-vaapi chargée dans Steam (VAAPI_STRICT_RC)" "le runtime Steam a peut-être retiré LD_PRELOAD : journalctl --user -u steamd | grep steamd-vaapi" \

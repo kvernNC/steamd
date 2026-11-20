@@ -9,6 +9,7 @@ set -euo pipefail
 CONF="${XDG_CONFIG_HOME:-$HOME/.config}/steamd/steamd.conf"
 WIDTH=1280 HEIGHT=800 REFRESH=60 STEAM_CAPTURE=pipewire-dmabuf
 GAMESCOPE_EXTRA_ARGS="" STEAM_EXTRA_ARGS="" ENCODER="" VAAPI_STRICT_RC=false
+AUDIO_ISOLATE=false AUDIO_SINK=steamd
 STEAMD_HOME="${XDG_DATA_HOME:-$HOME/.local/share}/steamd-home"
 # shellcheck source=/dev/null
 [[ -r $CONF ]] && source "$CONF"
@@ -74,6 +75,35 @@ if [[ $VAAPI_STRICT_RC == true ]]; then
         export LD_PRELOAD="$HOME/.local/lib/steamd/libsteamd-vaapi.so${LD_PRELOAD:+:$LD_PRELOAD}"
         export STEAMD_VA_FPS=$REFRESH STEAMD_VA_DEBUG=1
         if [[ $ENCODER == software ]]; then log "VAAPI_STRICT_RC sans effet avec ENCODER=software"; fi
+    fi
+fi
+
+# Sortie audio dédiée : Remote Play ne capture plus le son du bureau, et le jeu ne sort plus sur le PC
+if [[ $AUDIO_ISOLATE == true ]]; then
+    if ! [[ $AUDIO_SINK =~ ^[A-Za-z0-9_.-]+$ ]]; then
+        log "AUDIO_SINK invalide dans $CONF : « $AUDIO_SINK »"
+        exit 2
+    fi
+    if ! command -v pactl >/dev/null; then
+        log "AUDIO_ISOLATE : pactl introuvable (sudo pacman -S libpulse), son non isolé"
+    else
+        sinks=$(pactl list short sinks 2>/dev/null) || sinks=""
+        if awk -v n="$AUDIO_SINK" '$2 == n {f = 1} END {exit !f}' <<<"$sinks"; then
+            export PULSE_SINK=$AUDIO_SINK PULSE_SOURCE=$AUDIO_SINK.monitor
+        else
+            default=$(pactl get-default-sink 2>/dev/null) || default=""
+            if pactl load-module module-null-sink sink_name="$AUDIO_SINK" \
+                sink_properties=device.description="$AUDIO_SINK" >/dev/null 2>&1; then
+                # La nouvelle sortie ne doit pas devenir celle du bureau
+                if [[ -n $default && $(pactl get-default-sink 2>/dev/null) == "$AUDIO_SINK" ]]; then
+                    pactl set-default-sink "$default" || true
+                fi
+                log "sortie audio $AUDIO_SINK créée"
+                export PULSE_SINK=$AUDIO_SINK PULSE_SOURCE=$AUDIO_SINK.monitor
+            else
+                log "AUDIO_ISOLATE : création de la sortie $AUDIO_SINK impossible (PipeWire joignable ?), son non isolé"
+            fi
+        fi
     fi
 fi
 

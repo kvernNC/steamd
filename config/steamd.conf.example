@@ -6,6 +6,8 @@ STEAM_CAPTURE=pipewire-dmabuf   # pipewire-dmabuf | pipewire | none
 GAMESCOPE_EXTRA_ARGS=""         # ex. "--verbose"
 STEAM_EXTRA_ARGS=""
 ENCODER=""                      # hardware | software (x264) | vide = réglage de l'UI ; software conseillé sur GPU AMD
+AUDIO_ISOLATE=false             # true : sortie audio dédiée, le stream n'a plus le son du bureau et le PC reste muet
+#AUDIO_SINK=steamd              # nom de cette sortie
 VAAPI_STRICT_RC=false           # true (recommandé sur GPU AMD, avec ENCODER=hardware) : CBR et tampon d’une image, comme Sunshine
 # HOME dédié du client Steam de steamd (distinct du Steam du bureau)
 #STEAMD_HOME="$HOME/.local/share/steamd-home"

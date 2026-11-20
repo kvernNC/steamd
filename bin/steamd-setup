@@ -65,6 +65,13 @@ done
 
 echo "→ arrêt et désactivation des services"
 systemctl --user disable --now steamd.service 2>/dev/null || true
+# Sortie audio créée par AUDIO_ISOLATE
+if command -v pactl >/dev/null; then
+    # shellcheck source=/dev/null
+    sink=$( [[ -r $CONFDIR/steamd.conf ]] && source "$CONFDIR/steamd.conf"; echo "${AUDIO_SINK:-steamd}" )
+    pactl list short modules 2>/dev/null | awk -v a="sink_name=$sink" '$2 == "module-null-sink" && $3 == a {print $1}' |
+        while read -r m; do pactl unload-module "$m"; done
+fi
 systemctl --user reset-failed steamd.service 2>/dev/null || true
 
 if $remove_group && in_group; then

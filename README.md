@@ -90,6 +90,7 @@ STEAM_CAPTURE=pipewire-dmabuf   # pipewire-dmabuf | pipewire | none
 GAMESCOPE_EXTRA_ARGS=""
 STEAM_EXTRA_ARGS=""
 ENCODER=""                      # hardware | software | vide
+AUDIO_ISOLATE=false
 VAAPI_STRICT_RC=false
 #STEAMD_HOME="$HOME/.local/share/steamd-home"
 ```
@@ -147,6 +148,7 @@ Côté bureau : désactiver Remote Play (Paramètres > Remote Play) et les trans
 - **Le Deck demande un appairage** : le faire avec `steamd-launch --setup`, service arrêté.
 - **Pertes de paquets quand l'image bouge, avec un GPU AMD** : Steam encode en VBR avec un tampon HRD d'une seconde. L'encodeur VA-API envoie alors des rafales qui saturent le Wi-Fi, et monter le débit aggrave les pertes. Solution recommandée : `ENCODER=hardware` et `VAAPI_STRICT_RC=true`. La bibliothèque `libsteamd-vaapi.so` (`src/steamd-vaapi.c`), chargée par `LD_PRELOAD`, impose alors le réglage `vaapi_strict_rc_buffer` de Sunshine : du CBR avec un tampon d'une seule image (débit divisé par la fréquence). Le pilote radeonsi ne propose pas ICQ, et même réglé sur `vaapi_rc = icq`, Sunshine encode en CBR. Mesuré sur une RX 9070 XT en HEVC à 18 Mbit/s : 0 % de pertes et 9,9 ms de latence d'affichage sur le Deck, 0 % de pertes sur la TV. On vérifie le chargement avec `steamd-doctor`, et les corrections avec `journalctl --user -u steamd | grep steamd-vaapi` (`contrôle de débit … -> CBR`, `HRD … -> … bits`). Les messages `wrong ELF class: ELFCLASS64` viennent des processus 32 bits de Steam et sont sans conséquence.
   Repli : `ENCODER=software` (x264). `steamd-launch` modifie alors `EnableHardwareEncoding` dans `localconfig.vdf` avant chaque démarrage. On peut aussi décocher « Activer l'encodage matériel » dans Paramètres > Remote Play > Options avancées de l'hôte du client steamd. Mesuré : 0 % de pertes et 9,8 ms de latence d'affichage, au prix du CPU.
+- **Le son du bureau est mélangé au stream, et le jeu sort sur les haut-parleurs du PC** : les deux Steam partagent le PipeWire de l'utilisateur, et Remote Play capture la sortie par défaut. Avec `AUDIO_ISOLATE=true`, `steamd-launch` crée une sortie virtuelle (`module-null-sink`, nommée `AUDIO_SINK`, `steamd` par défaut) sans en faire la sortie par défaut. Il y envoie Steam et les jeux (`PULSE_SINK`), et Remote Play capture son moniteur (`PULSE_SOURCE`). `steamd-doctor` vérifie la sortie et l'environnement de Steam, et `steamd-setup --undo` retire la sortie.
 - **Lag sans pertes ni ping élevé** : le délai vient d'avant la capture. Mettre `REFRESH` à la fréquence du client (90 pour un Deck OLED, 60 pour un Deck LCD ou une TV), couper la synchro verticale dans le jeu et utiliser son limiteur d'images.
 
 ## Critères de fin pour la v1
