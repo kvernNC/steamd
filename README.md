@@ -352,6 +352,82 @@ Le plugin propose d'autres réglages que je n'ai pas repris, parce qu'ils peuven
 
 Côté PC, `steamd-doctor` signale une économie d'énergie Wi-Fi active. Le meilleur remède côté PC reste l'Ethernet.
 
+## Routeur MikroTik (RouterOS 7)
+
+Réglages utiles pour jouer à distance à travers WireGuard. Ces commandes sont à adapter : remplace `wireguard1`, `bridge`, `ether1`, les adresses et les débits par les tiens. Elles n'ont pas été vérifiées sur toutes les versions de RouterOS ; relis ta configuration avant de les appliquer (`/export`).
+
+### WireGuard : accès du VPN au PC
+
+Le Deck doit pouvoir joindre le PC à travers le tunnel, et pas seulement Internet. La règle ci-dessous autorise le trafic du VPN vers le LAN. Elle doit passer **avant** les règles qui bloquent, d'où le `place-before=0` (en tête de liste).
+
+```bash
+/ip firewall filter add chain=forward in-interface=wireguard1 out-interface=bridge action=accept comment="steamd: WireGuard vers LAN" place-before=0
+```
+
+Pour vérifier, avec le VPN actif sur le Deck :
+
+```bash
+ping -c3 192.168.88.10
+```
+
+Pendant un stream, l'affichage des performances doit indiquer une IP du LAN (connexion directe), pas un relais de Valve.
+
+La découverte de Remote Play se fait par broadcast, qui ne traverse pas WireGuard. Le Deck trouve quand même le PC par le compte Steam, après un délai qui peut aller jusqu'à une ou deux minutes.
+
+### UPnP désactivé
+
+Steam peut ouvrir tout seul des ports sur le routeur via UPnP. Avec WireGuard, ce n'est pas nécessaire. Pour voir l'état actuel :
+
+```bash
+/ip upnp print
+```
+
+Pour le désactiver, sauf si autre chose en a besoin :
+
+```bash
+/ip upnp set enabled=no
+```
+
+### CAKE sur l'envoi Internet
+
+Quand tu streames depuis l'extérieur, le goulot est l'**envoi** de ta connexion Internet : le PC y fait partir 12-15 Mbit/s de vidéo. Si un autre appareil envoie en même temps (sauvegarde cloud, photos, mises à jour), la file du routeur se remplit et le stream prend des pics. CAKE, réglé un peu sous le débit réel, empêche ça. Avec `diffserv4`, il donne aussi la priorité aux paquets marqués comme prioritaires, ce que fait l'option d'hôte de Steam « Prioriser le trafic réseau ».
+
+Mets environ 90 % de ton débit d'envoi réel, mesuré sans VPN. Exemple pour 50 Mbit/s mesurés :
+
+```bash
+/queue type add name=cake-up kind=cake cake-bandwidth=45M cake-diffserv=diffserv4 cake-nat=yes cake-ack-filter=filter
+```
+
+```bash
+/queue tree add name=cake-wan-up parent=ether1 queue=cake-up
+```
+
+- **Vérifier :** fais un test de bufferbloat (Waveform, par exemple) depuis le LAN pendant un gros envoi, avant et après.
+- **Si la file semble sans effet :** la règle FastTrack du pare-feu (`action=fasttrack-connection`) fait sauter certaines étapes de traitement aux paquets. Désactive-la le temps d'un test pour voir si c'est elle.
+- **Charge du routeur :** CAKE consomme du CPU, et WireGuard aussi. Pendant un stream :
+
+  ```bash
+  /system resource monitor
+  ```
+
+  Au-delà de 70-80 % en continu, baisse le débit de CAKE ou retire `cake-ack-filter`.
+
+Le sens de la réception (Internet vers la maison) n'a pas besoin de CAKE pour le stream : la vidéo part de chez toi.
+
+### Réveil du PC à travers le VPN
+
+Le magic packet est un broadcast : depuis le VPN, `wake-host.sh` ne l'envoie pas sur le LAN. Le MikroTik peut l'émettre lui-même, et le Raspberry Pi le relaie ensuite vers la carte Ethernet du PC, comme d'habitude. En SSH sur le routeur, avec la MAC qu'attend le relais :
+
+```bash
+/tool wol interface=bridge mac=AA:BB:CC:DD:EE:FF
+```
+
+### Si le MikroTik est aussi le point d'accès Wi-Fi
+
+- **5 GHz sur un canal fixe :** plutôt que le choix automatique, qui peut changer de canal en pleine partie.
+- **Pas de canal DFS** (canaux 52 à 144) : sur ces canaux, la détection d'un radar oblige la borne à se taire environ une minute, et le stream coupe net. Préfère 36 à 48, ou 149 à 165 si ton pays les autorise.
+- **Largeur de canal :** 80 MHz suffit largement pour 15 Mbit/s. Une largeur plus étroite est plus robuste quand le canal est encombré.
+
 ## Prérequis manuels (une seule fois)
 
 1. Dans une session de bureau normale : connexion à Steam (Steam Guard) et activation de Remote Play dans les paramètres.
