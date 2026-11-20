@@ -68,6 +68,8 @@ steamd/
 │   └── steamd-session-hook     # arrêt et reprise selon la session locale
 ├── deck/
 │   └── wake-host.sh            # envoi du magic packet depuis le Deck
+├── wifi/
+│   └── wifi-tune.sh            # réglages Wi-Fi anti-pics, Deck et PC (sans Decky)
 ├── install.sh
 └── uninstall.sh
 ```
@@ -315,6 +317,40 @@ Mise en place, en mode bureau sur le Deck :
 4. Steam > *Ajouter un jeu non-Steam* > choisir le script, puis le renommer « Réveil PC ».
 
 Le mode jeu n'affiche rien : chaque envoi est journalisé dans `~/.local/state/steamd/wake-host.log`.
+
+## Wi-Fi : réduire les pics de latence
+
+La plupart des pics pendant un stream viennent du Wi-Fi lui-même, en particulier de son économie d'énergie : la carte s'endort entre deux paquets et se réveille en retard. `wifi/wifi-tune.sh` corrige ça **sans Decky**, en passant par NetworkManager. Il fonctionne sur le Deck (SteamOS) comme sur le PC hôte (CachyOS). Il est inspiré des réglages du plugin Decky [WifiOptimizer](https://github.com/ArcadaLabs-Jason/WifiOptimizer).
+
+Pour l'installer :
+
+```bash
+./wifi/wifi-tune.sh install
+```
+
+Pour voir l'état du Wi-Fi et des réglages :
+
+```bash
+./wifi/wifi-tune.sh status
+```
+
+| Réglage | Quand |
+|---|---|
+| Économie d'énergie du Wi-Fi désactivée (NetworkManager et `iw`) | tout de suite, puis à chaque connexion |
+| États d'économie d'énergie PCIe (ASPM) de la carte Wi-Fi désactivés | tout de suite, puis à chaque connexion |
+| Tampons réseau agrandis (rafales du stream), file d'émission allongée | tout de suite, puis à chaque connexion |
+| Options du pilote : rtw88 du Deck LCD, rtw89, mt7921e, iwlwifi. Rien à faire pour ath11k du Deck OLED | au prochain démarrage |
+
+- **Réapplication automatique :** un script de NetworkManager remet ces réglages à chaque connexion Wi-Fi, y compris après une mise en veille.
+- **Mises à jour de SteamOS :** les fichiers sont dans `/etc`, conservé lors des mises à jour.
+- **Mot de passe :** sur le Deck, `sudo` demande que le mot de passe de l'utilisateur `deck` soit défini (`passwd`).
+- **Retour en arrière :** `./wifi/wifi-tune.sh uninstall` retire tout et restaure les tampons d'origine. Un redémarrage revient complètement aux réglages d'origine.
+
+En option, `./wifi/wifi-tune.sh lock-ap` verrouille le réseau Wi-Fi actuel sur son point d'accès actuel. Le Deck ne cherche alors plus d'autre point d'accès en arrière-plan, ce qui supprime une autre source de pics. La contrepartie : si ce point d'accès disparaît (autre pièce, autre bâtiment), le Deck ne se reconnecte plus à ce réseau. Pour défaire le verrouillage : `unlock-ap`. C'est à réserver au réseau de la maison ; à éviter sur un réseau d'entreprise avec plusieurs bornes.
+
+Le plugin propose d'autres réglages que je n'ai pas repris, parce qu'ils peuvent empêcher la connexion ou n'aident pas le stream : bande forcée, DNS, IPv6, WPA2, changement de backend Wi-Fi, file d'attente CAKE.
+
+Côté PC, `steamd-doctor` signale une économie d'énergie Wi-Fi active. Le meilleur remède côté PC reste l'Ethernet.
 
 ## Prérequis manuels (une seule fois)
 

@@ -417,6 +417,19 @@ fi
 
 # ---------------------------------------------------------------------------
 section "Réseau (pare-feu)"
+# Wi-Fi du PC hôte : économie d'énergie (cause classique de pics de latence).
+for wd in /sys/class/net/*/wireless; do
+	[[ -e $wd ]] || continue
+	wi=$(basename "$(dirname "$wd")")
+	[[ $(cat "/sys/class/net/$wi/operstate" 2>/dev/null) == up ]] || continue
+	ps=$(iw dev "$wi" get power_save 2>/dev/null | awk '{print $NF}')
+	if [[ $ps == off ]]; then
+		ok "Wi-Fi $wi : économie d'énergie désactivée"
+	elif [[ -n $ps ]]; then
+		warn "Wi-Fi $wi : économie d'énergie active, source de pics de latence pendant le stream" "wifi/wifi-tune.sh install (dans le dépôt steamd), ou mieux : le PC en Ethernet"
+	fi
+	[[ -e /etc/NetworkManager/dispatcher.d/99-steamd-wifi ]] && info "réglages wifi-tune installés sur ce PC"
+done
 fw=""
 systemctl is-active --quiet ufw 2>/dev/null && fw=ufw
 systemctl is-active --quiet firewalld 2>/dev/null && fw=firewalld
