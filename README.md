@@ -52,12 +52,14 @@ steamd/
 ├── config/
 │   └── steamd.conf.example     # résolution, fréquence, options
 ├── systemd/
-│   └── steamd.service          # unité utilisateur
+│   ├── steamd.service          # unité utilisateur
+│   └── steamd-profiled.service # choix du profil selon le client
 ├── udev/
 │   └── 60-steamd-uinput.rules
 ├── bin/
 │   ├── steamd-launch           # wrapper : lit la conf, lance gamescope et Steam
 │   ├── steamd-doctor           # diagnostic
+│   ├── steamd-profiled         # profil d'affichage selon le client Remote Play connecté
 │   └── steamd-setup            # partie utilisateur de l'installation
 ├── src/
 │   └── steamd-vaapi.c          # LD_PRELOAD : CBR + tampon d'une image pour l'encodeur VA-API
@@ -86,6 +88,9 @@ gamescope -W 1280 -H 800 -w 1280 -h 800 -r 60 \
 WIDTH=1280
 HEIGHT=800
 REFRESH=60
+APP_WIDTH="" APP_HEIGHT=""      # résolution de rendu, vide = WIDTH/HEIGHT
+HDR=false
+CLIENT_PROFILES=()              # "IP[,IP2] OUTPUT=LxH RENDER=LxH REFRESH=N HDR=true|false"
 STEAM_CAPTURE=pipewire-dmabuf   # pipewire-dmabuf | pipewire | none
 GAMESCOPE_EXTRA_ARGS=""
 STEAM_EXTRA_ARGS=""
@@ -138,6 +143,7 @@ Côté bureau : désactiver Remote Play (Paramètres > Remote Play) et les trans
 | 6 | Jeu lancé depuis le Deck pendant que le bureau est utilisé | Le bureau n'est pas modifié (ni fenêtre ni changement de résolution) |
 | 7 | PC éteint, raccourci de réveil sur le Deck | Le PC démarre et Remote Play est disponible en moins de 60 s |
 | 8 | `steamd-doctor` | Rapport lisible, chaque point marqué OK ou KO avec une piste de correction |
+| 9 | Stream depuis la TV avec son entrée `CLIENT_PROFILES`, puis `steamd-profiled --clients` | L'IP de la TV apparaît. Steam headless redémarre dans son profil, et la TV se reconnecte à cette résolution. Dix minutes après, retour au profil par défaut, sauf pendant une partie |
 
 ## Problèmes connus et pistes
 
@@ -181,6 +187,23 @@ sudo reboot
 ### Configuration
 
 Modifier `~/.config/steamd/steamd.conf`, puis lancer `systemctl --user restart steamd`. En cas d'écran noir, passer `STEAM_CAPTURE` à `pipewire`, puis à `none`.
+
+### Profils par client
+
+Les réglages `WIDTH`, `HEIGHT`, `APP_WIDTH`, `APP_HEIGHT`, `REFRESH` et `HDR` forment le profil par défaut (le Deck, par exemple). D'autres clients peuvent avoir leur propre profil, repéré par leur IP :
+
+```bash
+CLIENT_PROFILES=(
+    "192.168.88.50 OUTPUT=3840x2160 RENDER=2560x1440 REFRESH=60"   # TV
+)
+```
+
+- `OUTPUT` est la sortie de gamescope (`-W`/`-H`), peu coûteuse. `RENDER` est la résolution de rendu du jeu (`-w`/`-h`), qui pèse sur le GPU : gamescope agrandit l'image. Avec `OUTPUT` sans `RENDER`, le jeu est rendu à la résolution de sortie.
+- `steamd-profiled.service` relève toutes les `PROFILE_POLL` secondes (5 par défaut) les IP connectées au Steam de steamd, et seulement à lui : le Steam du bureau est ignoré. Quand un client d'un profil se connecte, il redémarre Steam headless avec ce profil. **Le client doit alors se reconnecter.** Le retour au profil par défaut a lieu après `PROFILE_REVERT_AFTER` secondes (600 par défaut) sans ce client. **Jamais pendant une partie** : le changement attend sa fin.
+- `steamd-profiled --clients`, pendant un stream, affiche les IP vues et le profil correspondant. Il sert à vérifier la détection avant de remplir `CLIENT_PROFILES`. Si l'IP du client n'apparaît pas, la détection par sockets établies ne marche pas avec ce client.
+- `steamd-launch --profiles` liste les profils et le profil actif. `steamd-launch --profile default|IP` en demande un à la main, et il est appliqué hors partie.
+- `HDR=true` ajoute `--hdr-enabled` à gamescope et `DXVK_HDR=1` aux jeux. À valider de bout en bout : si les stats du client montrent encore `NV12` (8 bits), le HDR ne passe pas.
+- Une entrée invalide arrête le service avec le code 2. Le message figure dans `journalctl --user -u steamd`.
 
 ### Cohabitation avec le Steam du bureau
 

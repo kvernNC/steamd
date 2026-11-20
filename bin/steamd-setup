@@ -41,7 +41,7 @@ if [[ ${1:-} != --undo ]]; then
     systemctl --user daemon-reload
     systemctl --user enable pipewire.socket pipewire-pulse.socket wireplumber.service
     systemctl --user disable steamd-session-hook.service 2>/dev/null || true
-    systemctl --user enable steamd.service
+    systemctl --user enable steamd.service steamd-profiled.service
 
     echo
     echo "Prêt. Première configuration du client steamd (une seule fois, dans la session de bureau) :"
@@ -64,7 +64,7 @@ for a in "$@"; do
 done
 
 echo "→ arrêt et désactivation des services"
-systemctl --user disable --now steamd.service 2>/dev/null || true
+systemctl --user disable --now steamd-profiled.service steamd.service 2>/dev/null || true
 # Sortie audio créée par AUDIO_ISOLATE
 if command -v pactl >/dev/null; then
     # shellcheck source=/dev/null

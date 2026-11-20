@@ -1,0 +1,109 @@
+#!/usr/bin/env bash
+# Choisit le profil d'affichage de steamd selon le client Remote Play connecté
+# (CLIENT_PROFILES), ou selon une demande « steamd-launch --profile ». Le
+# changement redémarre Steam headless, jamais pendant une partie.
+#   steamd-profiled            boucle (steamd-profiled.service)
+#   steamd-profiled --clients  IP connectées au Steam de steamd et profil correspondant
+set -euo pipefail
+
+CONF="${XDG_CONFIG_HOME:-$HOME/.config}/steamd/steamd.conf"
+CLIENT_PROFILES=() PROFILE_REVERT_AFTER=600 PROFILE_POLL=5
+# shellcheck source=/dev/null
+[[ -r $CONF ]] && source "$CONF"
+
+LAUNCH="$(dirname "$(readlink -f "$0")")/steamd-launch"
+RUNDIR="${XDG_RUNTIME_DIR:-/run/user/$UID}/steamd"
+PROFILE_FILE=$RUNDIR/profile
+PROFILE_REQUEST=$RUNDIR/profile.request
+
+log() { echo "steamd-profiled: $*" >&2; }
+
+# Processus de steamd.service (Steam headless et ses jeux)
+steamd_pids() {
+    local cg
+    cg=$(systemctl --user show -p ControlGroup --value steamd.service 2>/dev/null) || return 0
+    # STEAMD_CGROUP_ROOT : pour les tests
+    [[ -n $cg ]] && cat "${STEAMD_CGROUP_ROOT:-/sys/fs/cgroup}$cg/cgroup.procs" 2>/dev/null || true
+}
+
+# IP distantes des sockets établies du Steam de steamd, hors boucle locale. On y
+# trouve aussi les serveurs de Valve : seules les IP de CLIENT_PROFILES comptent.
+client_peers() {
+    local pids
+    pids=$(steamd_pids | paste -sd ' ')
+    [[ -n $pids ]] || return 0
+    ss -Htunp state established 2>/dev/null |
+        awk -v pids="$pids" '
+            BEGIN { n = split(pids, a, " "); for (i = 1; i <= n; i++) want[a[i]] = 1 }
+            {
+                for (i = 1; i <= NF; i++) if ($i ~ /^users:/) { peer = $(i - 1); users = $i }
+                hit = 0
+                while (match(users, /pid=[0-9]+/)) {
+                    if (substr(users, RSTART + 4, RLENGTH - 4) in want) hit = 1
+                    users = substr(users, RSTART + RLENGTH)
+                }
+                if (hit) print peer
+            }' |
+        sed -E 's/^\[//; s/\]?:[0-9*]+$//; s/^::ffff://' |
+        grep -vE '^(127\.|::1$|$)' | sort -u || true
+}
+
+# Une partie lancée par Steam headless (« reaper SteamLaunch AppId=N ») ?
+game_running() {
+    local p cmd
+    while read -r p; do
+        cmd=$({ tr '\0' ' ' <"/proc/$p/cmdline"; } 2>/dev/null) || continue
+        [[ $cmd == *SteamLaunch*AppId=* ]] && return 0
+    done < <(steamd_pids)
+    return 1
+}
+
+if [[ ${1:-} == --clients ]]; then
+    mapfile -t peers < <(client_peers)
+    if ((${#peers[@]} == 0)); then
+        echo "aucune connexion établie pour le Steam de steamd (lancer un stream, puis relancer)"
+        exit 0
+    fi
+    printf 'IP connectées au Steam de steamd :\n'
+    printf '  %s\n' "${peers[@]}"
+    want=$("$LAUNCH" --profile-for "${peers[@]}")
+    echo "profil correspondant : ${want:-aucun (profil par défaut)}"
+    exit 0
+fi
+
+mkdir -p "$RUNDIR"
+last_seen=$SECONDS waiting=""
+while sleep "$PROFILE_POLL"; do
+    systemctl --user -q is-active steamd.service || continue
+    cur=$(cat "$PROFILE_FILE" 2>/dev/null || echo default)
+    target=$cur
+    if [[ -s $PROFILE_REQUEST ]]; then
+        target=$(head -n1 "$PROFILE_REQUEST")
+        last_seen=$SECONDS
+    elif ((${#CLIENT_PROFILES[@]})); then
+        mapfile -t peers < <(client_peers)
+        want=$("$LAUNCH" --profile-for "${peers[@]}")
+        if [[ -n $want ]]; then
+            target=$want
+            last_seen=$SECONDS
+        elif [[ $cur != default ]] && ((SECONDS - last_seen >= PROFILE_REVERT_AFTER)); then
+            target=default
+        fi
+    fi
+
+    if [[ $target == "$cur" ]]; then
+        rm -f "$PROFILE_REQUEST"
+        waiting=""
+        continue
+    fi
+    if game_running; then
+        [[ $waiting == "$target" ]] || log "partie en cours : profil $target appliqué à la fin de la partie"
+        waiting=$target
+        continue
+    fi
+    log "profil $cur -> $target : redémarrage de Steam headless"
+    echo "$target" >"$PROFILE_FILE"
+    rm -f "$PROFILE_REQUEST"
+    waiting=""
+    systemctl --user restart steamd.service || log "redémarrage de steamd impossible"
+done

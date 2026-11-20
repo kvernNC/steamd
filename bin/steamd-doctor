@@ -9,6 +9,7 @@ check() { local msg=$1 fix=$2; shift 2; if "$@" >/dev/null 2>&1; then ok "$msg";
 
 CONF="${XDG_CONFIG_HOME:-$HOME/.config}/steamd/steamd.conf"
 STEAMD_HOME="${XDG_DATA_HOME:-$HOME/.local/share}/steamd-home"
+CLIENT_PROFILES=()
 # shellcheck source=/dev/null
 [[ -r $CONF ]] && source "$CONF"
 
@@ -57,6 +58,13 @@ check "gestionnaire systemd utilisateur dans le groupe input" "redémarrer le PC
 echo "== Service"
 check "steamd.service activé" "systemctl --user enable steamd.service" systemctl --user -q is-enabled steamd.service
 check "steamd.service actif" "journalctl --user -u steamd -e" systemctl --user -q is-active steamd.service
+launch=$(command -v steamd-launch || echo "$(dirname "$(readlink -f "$0")")/steamd-launch")
+check "profils d'affichage valides" "journalctl --user -u steamd -e (ligne CLIENT_PROFILES ou valeur invalide)" "$launch" --profiles
+"$launch" --profiles 2>/dev/null | sed 's/^/     /'
+if ((${#CLIENT_PROFILES[@]})); then
+    check "steamd-profiled.service actif (CLIENT_PROFILES)" "systemctl --user enable --now steamd-profiled.service" \
+        systemctl --user -q is-active steamd-profiled.service
+fi
 if [[ ${AUDIO_ISOLATE:-false} == true ]]; then
     sink=${AUDIO_SINK:-steamd}
     check "sortie audio $sink présente (AUDIO_ISOLATE)" "systemctl --user restart steamd ; pactl list short sinks" \

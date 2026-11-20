@@ -1,0 +1,12 @@
+[Unit]
+Description=steamd : profil d'affichage selon le client Remote Play
+After=steamd.service
+
+[Service]
+Type=simple
+ExecStart=@BINDIR@/steamd-profiled
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=default.target

@@ -2,6 +2,20 @@
 WIDTH=1280
 HEIGHT=800
 REFRESH=60                      # fréquence du client : 90 pour un Deck OLED
+APP_WIDTH="" APP_HEIGHT=""      # résolution de rendu du jeu (-w/-h), vide = WIDTH/HEIGHT ; gamescope agrandit
+HDR=false                       # gamescope --hdr-enabled + DXVK_HDR=1 ; à valider (stats du client : NV12 = 8 bits, pas de HDR)
+
+# Profils par client : les réglages ci-dessus forment le profil par défaut (le Deck par exemple).
+#   "IP[,IP2] OUTPUT=LxH RENDER=LxH REFRESH=N HDR=true|false"   (clés absentes = profil par défaut)
+# OUTPUT : sortie de gamescope, peu coûteuse ; RENDER : rendu du jeu, ce qui pèse sur le GPU.
+# Quand un client du profil se connecte, steamd-profiled redémarre Steam headless avec ce profil
+# (le client doit se reconnecter), jamais pendant une partie ; retour au défaut après
+# PROFILE_REVERT_AFTER s sans ce client. IP vues : steamd-profiled --clients pendant un stream.
+CLIENT_PROFILES=(
+    # "192.168.88.50 OUTPUT=3840x2160 RENDER=2560x1440 REFRESH=60"
+)
+#PROFILE_REVERT_AFTER=600
+#PROFILE_POLL=5                 # intervalle de relevé des clients (s)
 STEAM_CAPTURE=pipewire-dmabuf   # pipewire-dmabuf | pipewire | none
 GAMESCOPE_EXTRA_ARGS=""         # ex. "--verbose"
 STEAM_EXTRA_ARGS=""

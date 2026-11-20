@@ -19,7 +19,7 @@ package() {
 
     install -Dm755 "$srcdir/libsteamd-vaapi.so" "$pkgdir/usr/lib/steamd/libsteamd-vaapi.so"
     install -Dm755 -t "$pkgdir/usr/bin" \
-        "$src"/bin/steamd-{launch,doctor,setup}
+        "$src"/bin/steamd-{launch,doctor,setup,profiled}
 
     install -dm755 "$pkgdir/usr/lib/systemd/user"
     for u in "$src"/systemd/*.service; do
