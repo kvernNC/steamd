@@ -109,7 +109,7 @@ Ce que fait `install.sh` (relançable sans risque) :
 | udev | `/etc/udev/rules.d/60-steamd-uinput.rules` (groupe `input` par défaut, `--group NOM` pour changer) |
 | Module | `/etc/modules-load.d/steamd-uinput.conf` pour charger `uinput` au boot |
 | Menu | entrée « Récupérer Steam (steamd) » dans `~/.local/share/applications` (même effet que le bouton de la popup) |
-| polkit | `/etc/polkit-1/rules.d/60-steamd.rules` : autorise l'utilisateur à mettre en veille ou éteindre le PC sans session (pour `IDLE_ACTION`) |
+| polkit | `/etc/polkit-1/rules.d/60-steamd.rules` : autorise l'utilisateur à mettre en veille ou éteindre le PC sans session (`IDLE_ACTION`), et à changer de profil d'énergie (`GAME_POWER_PROFILE`) |
 | Groupe | ajoute l'utilisateur au groupe, s'il n'y est pas déjà |
 | Linger | `loginctl enable-linger $USER`, s'il n'est pas déjà activé |
 | PipeWire | `pipewire.socket`, `pipewire-pulse.socket` et `wireplumber.service` activés en utilisateur |
@@ -171,11 +171,14 @@ Tous les jeux lancés par le Steam headless reçoivent des réglages pensés pou
 
 | Réglage | Par défaut | Effet |
 |---|---|---|
-| `STREAM_TUNING=true` | actif | `DXVK_CONFIG=dxgi.maxFrameLatency=1;d3d9.maxFrameLatency=1` : une image préparée d'avance au lieu de 3, donc moins de latence. `PROTON_DXVK_LOWLATENCY=1` et `PROTON_VKD3D_LOWLATENCY=1` : variantes « low latency » de DXVK et VKD3D-Proton propres à [Proton-CachyOS](https://github.com/CachyOS/proton-cachyos), pour un meilleur rythme d'images, ignorées par les autres versions de Proton. `PROTON_USE_NTSYNC=1` : synchronisation ntsync, ignorée si la version de Proton ne la gère pas (non documentée par Proton-CachyOS, `steamd-doctor` vérifie) |
+| `STREAM_TUNING=true` | actif | `DXVK_CONFIG=dxgi.maxFrameLatency=1;d3d9.maxFrameLatency=1` : une image préparée d'avance au lieu de 3, donc moins de latence. `PROTON_DXVK_LOWLATENCY=1` et `PROTON_VKD3D_LOWLATENCY=1` : variantes « low latency » de DXVK et VKD3D-Proton propres à [Proton-CachyOS](https://github.com/CachyOS/proton-cachyos), pour un meilleur rythme d'images, ignorées par les autres versions de Proton. `ENABLE_LAYER_MESA_ANTI_LAG=1` : Anti-Lag d'AMD fourni par Mesa, moins de latence dans les jeux qui l'utilisent, ignoré sinon. ntsync n'a pas besoin de réglage : il est actif par défaut dans les Proton récents (`PROTON_NO_NTSYNC=1` le désactiverait) |
 | `FPS_LIMIT=auto` | = `REFRESH` | Plafond calé sur la fréquence de capture : le GPU garde de la marge pour capturer et encoder, et les images partent régulièrement. Pour un jeu lourd qui ne tient pas `REFRESH`, un sous-multiple (45 pour 90) est plus fluide qu'un rythme irrégulier |
 | `FPS_LIMIT_METHOD=mangohud` | MangoHud | Couche Vulkan invisible (paquet `mangohud`), qui couvre les jeux natifs comme ceux sous Proton. `dxvk` : limiteurs de DXVK et VKD3D-Proton, sans MangoHud. Repli automatique sur `dxvk` si MangoHud est absent |
 | `FPS_LIMIT_TIMING=late` | late | Avec MangoHud : `late` donne la latence la plus basse, `early` des intervalles plus réguliers |
+| `GAME_POWER_PROFILE=performance` | performance | Profil d'énergie (power-profiles-daemon) pendant une partie Remote Play, rétabli à la fin. Équivalent de `game-performance` de CachyOS, mais limité à la durée de la partie ; `none` pour ne rien changer |
 | `STEAM_ENV=(...)` | vide | Variables supplémentaires (`NOM=valeur`) pour tous les jeux. Elles passent en dernier et remplacent les précédentes si le nom est le même, par exemple `"PROTON_DXVK_LOWLATENCY=0"` pour retirer un réglage |
+
+Plusieurs de ces variables sont repérées grâce à [GOverlay](https://github.com/benjamimgois/goverlay) et à la documentation de [Proton-CachyOS](https://github.com/CachyOS/proton-cachyos).
 
 À essayer dans `STEAM_ENV` avec Proton-CachyOS et une carte RDNA4 : `PROTON_FSR4_UPGRADE=1` remplace FSR 3.1 par FSR 4 dans les jeux compatibles. Avec un upscaler en mode qualité, le GPU travaille moins et garde de la marge pour l'encodage dans les jeux lourds.
 
@@ -471,7 +474,7 @@ Tout le contenu du périmètre v1 est écrit. Les scripts passent `shellcheck`. 
 - le bon déclenchement de `steamd-session-hook` par Plasma 6 (`graphical-session-pre.target` puis `graphical-session.target`) ;
 - l'arrêt propre via `steam -shutdown` sans affichage ;
 - la limite d'images par seconde via MangoHud et les réglages `STREAM_TUNING` dans les jeux lancés par Steam headless (perte d'images et latence d'affichage, à comparer avec `STREAM_TUNING=false`) ;
-- la prise en charge de `PROTON_USE_NTSYNC` par la version de Proton utilisée ;
+- ntsync réellement utilisé en jeu (`steamd-doctor` pendant une partie), l'effet d'Anti-Lag Mesa, et le changement de profil d'énergie sans session (règle polkit) ;
 - les noms de clés des options Remote Play, à relever avec `steamd-steamcfg diff` ;
 - la détection d'une partie via `reaper SteamLaunch AppId=` sur la version de Steam installée ;
 - le lancement du Steam du bureau depuis le service (environnement graphique importé par Plasma), l'affichage de la popup et ses boutons dans Plasma ;

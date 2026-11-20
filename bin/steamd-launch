@@ -25,7 +25,8 @@
 #     attend qu'il se ferme (standby)
 #   - sans aucune session et sans partie depuis IDLE_TIMEOUT -> IDLE_ACTION
 #     (none, suspend ou poweroff)
-# Pendant une partie Remote Play, la mise en veille du PC est bloquée.
+# Pendant une partie Remote Play, la mise en veille du PC est bloquée et le
+# profil d'énergie passe à GAME_POWER_PROFILE (performance par défaut).
 # SIGUSR1 force une réévaluation immédiate (envoyé par steamd-session-hook).
 #
 # Code de sortie 2 : configuration invalide (systemd ne relance pas).
@@ -72,6 +73,7 @@ RESUME_DESKTOP_STEAM=true
 DESKTOP_STEAM_ARGS=""
 NOTIFY=true
 INHIBIT_SLEEP_DURING_GAME=true
+GAME_POWER_PROFILE=performance
 IDLE_ACTION=none
 IDLE_TIMEOUT=1800
 POLL_INTERVAL=5
@@ -126,6 +128,10 @@ validate_conf() {
 	late | early) ;;
 	*) die $EXIT_CONFIG "FPS_LIMIT_TIMING doit valoir late ou early (valeur : '$FPS_LIMIT_TIMING')" ;;
 	esac
+	case $GAME_POWER_PROFILE in
+	performance | balanced | power-saver | none) ;;
+	*) die $EXIT_CONFIG "GAME_POWER_PROFILE doit valoir performance, balanced, power-saver ou none (valeur : '$GAME_POWER_PROFILE')" ;;
+	esac
 	case $STREAM_TUNING in
 	true | false) ;;
 	*) die $EXIT_CONFIG "STREAM_TUNING doit valoir true ou false (valeur : '$STREAM_TUNING')" ;;
@@ -173,9 +179,11 @@ build_command() {
 		# VKD3D-Proton (D3D12), meilleur rythme d'images. Ignorées par les
 		# autres versions de Proton.
 		envs+=("PROTON_DXVK_LOWLATENCY=1" "PROTON_VKD3D_LOWLATENCY=1")
-		# Synchronisation ntsync : non documentée par Proton-CachyOS, ignorée
-		# si la version de Proton ne la gère pas (voir steamd-doctor).
-		envs+=("PROTON_USE_NTSYNC=1")
+		# Anti-Lag d'AMD fourni par Mesa (couche Vulkan) : ignoré si la couche
+		# n'est pas installée ou si le jeu ne l'utilise pas.
+		envs+=("ENABLE_LAYER_MESA_ANTI_LAG=1")
+		# ntsync : actif par défaut dans les Proton récents (désactivable par
+		# PROTON_NO_NTSYNC), rien à faire ici.
 	fi
 	# Limite d'images par seconde. mangohud : couche Vulkan, couvre les jeux
 	# natifs Vulkan et ceux sous Proton (DXVK et VKD3D-Proton passent par
@@ -349,6 +357,40 @@ close_prompt() {
 	PROMPT_PID=0
 }
 
+# --- Profil d'énergie pendant une partie (power-profiles-daemon) ----------------
+# Équivalent de « game-performance » de CachyOS, mais limité à la durée de la
+# partie Remote Play : le profil précédent est rétabli à la fin.
+POWER_PREV=""
+power_on() {
+	[[ $GAME_POWER_PROFILE != none && -z $POWER_PREV ]] || return 0
+	command -v powerprofilesctl >/dev/null || {
+		POWER_PREV=keep
+		return 0
+	}
+	local cur
+	cur=$(powerprofilesctl get 2>/dev/null) || {
+		POWER_PREV=keep
+		return 0
+	}
+	if [[ $cur == "$GAME_POWER_PROFILE" ]]; then
+		POWER_PREV=keep
+	elif powerprofilesctl set "$GAME_POWER_PROFILE" 2>/dev/null; then
+		POWER_PREV=$cur
+		log "profil d'énergie : $GAME_POWER_PROFILE pendant la partie (était $cur)"
+	else
+		POWER_PREV=keep
+		log "échec du passage au profil d'énergie $GAME_POWER_PROFILE (règle polkit installée ?)"
+	fi
+}
+power_off() {
+	case $POWER_PREV in
+	"") return 0 ;;
+	keep) ;;
+	*) powerprofilesctl set "$POWER_PREV" 2>/dev/null && log "profil d'énergie rétabli : $POWER_PREV" ;;
+	esac
+	POWER_PREV=""
+}
+
 # --- Blocage de la mise en veille pendant une partie ---------------------------
 INHIBIT_PID=0
 inhibit_on() {
@@ -488,7 +530,7 @@ supervise() {
 	local idle=0 last_tick=$SECONDS dt
 	trap on_term TERM INT
 	trap on_usr1 USR1
-	trap 'close_prompt; inhibit_off; set_state stopped "service arrêté"' EXIT
+	trap 'close_prompt; inhibit_off; power_off; set_state stopped "service arrêté"' EXIT
 	log "configuration : $CONF ; politique de session : $DESKTOP_SESSION_POLICY ; inactivité : $IDLE_ACTION"
 
 	while ((!STOPPING)); do
@@ -508,6 +550,7 @@ supervise() {
 			sweep_cgroup
 			CHILD=0
 			inhibit_off
+			power_off
 			if ((SECONDS - CHILD_STARTED < 60)); then fails=$((fails + 1)); else fails=1; fi
 			delay=$((RESTART_DELAY * fails))
 			((delay > 300)) && delay=300
@@ -525,8 +568,10 @@ supervise() {
 			last_game=$SECONDS
 			idle=0
 			inhibit_on "Partie Remote Play : $name"
+			power_on
 		else
 			inhibit_off
+			power_off
 		fi
 
 		if [[ $DESKTOP_SESSION_POLICY == yield ]] && local_graphical_session; then
@@ -536,6 +581,7 @@ supervise() {
 				rm -f "$HANDOVER_FILE"
 				close_prompt
 				inhibit_off
+				power_off
 				stop_child "passage de main demandé depuis le bureau${game:+, partie « $name » fermée}"
 				set_state standby "session graphique locale ouverte : le Steam du bureau a la priorité"
 				desktop_waiting=0
@@ -597,6 +643,8 @@ supervise() {
 	done
 
 	inhibit_off
+
+	power_off
 	stop_child "arrêt du service"
 }
 

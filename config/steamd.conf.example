@@ -39,9 +39,11 @@ STEAM_EXTRA_ARGS=""
 #     Proton-CachyOS : variantes « low latency » de DXVK (Direct3D 9 à 11) et
 #     de VKD3D-Proton (Direct3D 12), meilleur rythme d'images ; ignorées par
 #     les autres versions de Proton
-#   PROTON_USE_NTSYNC=1
-#     synchronisation ntsync (moins de micro-saccades), ignorée si la version
-#     de Proton ne la gère pas (steamd-doctor indique ce qu'il en est)
+#   ENABLE_LAYER_MESA_ANTI_LAG=1
+#     Anti-Lag d'AMD fourni par Mesa : moins de latence dans les jeux qui
+#     l'utilisent, ignoré sinon
+# ntsync n'a pas besoin de réglage : il est actif par défaut dans les Proton
+# récents (PROTON_NO_NTSYNC=1 le désactiverait).
 # Pour retirer un seul de ces réglages, le remettre à 0 dans STEAM_ENV, par
 # exemple "PROTON_DXVK_LOWLATENCY=0".
 STREAM_TUNING=true
@@ -111,6 +113,10 @@ NOTIFY=true
 # --- Énergie --------------------------------------------------------------------
 # Bloquer la mise en veille du PC pendant une partie Remote Play.
 INHIBIT_SLEEP_DURING_GAME=true
+# Profil d'énergie pendant une partie Remote Play (power-profiles-daemon),
+# rétabli à la fin : équivalent de « game-performance » de CachyOS, limité à
+# la partie. performance | balanced | power-saver | none (ne rien changer).
+GAME_POWER_PROFILE=performance
 # Que faire quand le PC tourne sans aucune session (ni bureau, ni SSH) et sans
 # partie depuis IDLE_TIMEOUT secondes :
 #   none      ne rien faire (défaut)

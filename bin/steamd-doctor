@@ -250,7 +250,12 @@ mapfile -t cfg_lines < <(
 )
 read -r fps_limit fps_method stream_tuning <<<"${cfg_lines[0]:-0 mangohud true}"
 if [[ $stream_tuning == true ]]; then
-	ok "optimisations stream actives pour les jeux de Steam headless (DXVK maxFrameLatency=1, DXVK/VKD3D low latency de Proton-CachyOS, ntsync)"
+	ok "optimisations stream actives pour les jeux de Steam headless (DXVK maxFrameLatency=1, DXVK/VKD3D low latency de Proton-CachyOS, Anti-Lag Mesa)"
+	if compgen -G '/usr/share/vulkan/implicit_layer.d/*[Aa]nti*[Ll]ag*.json' >/dev/null; then
+		ok "couche Anti-Lag de Mesa installée"
+	else
+		info "couche Anti-Lag de Mesa absente (Mesa trop ancien ?) : ENABLE_LAYER_MESA_ANTI_LAG sans effet"
+	fi
 	if [[ -e /dev/ntsync ]]; then
 		if [[ -r /dev/ntsync && -w /dev/ntsync ]]; then
 			ok "/dev/ntsync accessible"
@@ -400,6 +405,11 @@ if [[ -n $inh ]]; then
 	info "mise en veille bloquée par steamd (partie Remote Play en cours)"
 else
 	info "aucun blocage de veille posé par steamd"
+fi
+if have powerprofilesctl; then
+	info "profil d'énergie actuel : $(powerprofilesctl get 2>/dev/null || echo inconnu) (GAME_POWER_PROFILE s'applique pendant les parties Remote Play)"
+else
+	info "powerprofilesctl absent : GAME_POWER_PROFILE sans effet (sudo pacman -S power-profiles-daemon)"
 fi
 if [[ $idle_action == none ]]; then
 	info "IDLE_ACTION=none : sans session, le PC reste allumé indéfiniment après un réveil"
