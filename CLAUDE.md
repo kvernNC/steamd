@@ -137,12 +137,25 @@ Tout le reste n'a été testé qu'avec les faux de `tests/` : **à vérifier en 
      réduit-il l'image côté hôte) ?
    - `gamescopectl` (si présent) : changer la résolution ou la fréquence
      headless à chaud, sans redémarrer gamescope ?
-   Pistes : (1) repli sans détection : sortie 4K (`-W/-H`), rendu plus bas
-   avec FSR de gamescope, Steam réduit pour le Deck, mais une seule
-   fréquence ; (2) profils par client (par nom ou IP) appliqués à la
-   connexion, avant le lancement du jeu, en relançant gamescope si un
-   changement à chaud est impossible (coupure à la première connexion).
-   Règle 2 : ne jamais relancer gamescope pendant une partie.
+   - tester l'option d'hôte Steam « Adapter la résolution du bureau au
+     client de streaming » dans gamescope headless (relever sa clé avec
+     `steamd-steamcfg snapshot/diff`) : Steam ajuste-t-il seul la
+     résolution de rendu selon le client ?
+   Conclusions déjà tirées avec l'utilisateur :
+   - **Pas de proxy Remote Play** : négociation chiffrée (clés d'appairage),
+     Steam vit dans gamescope (relancer gamescope = relancer le serveur
+     pendant que le client attend), et en VPN la mise en relation passe
+     par les serveurs de Valve.
+   - Le rendu 4K natif est hors de portée du PC : distinguer sortie
+     (`-W/-H`, peu coûteuse) et rendu (`-w/-h`, ex. 1440p + FSR gamescope).
+   - Plan retenu si l'option Steam ne suffit pas : **profils par client**
+     (résolution de sortie, de rendu et fréquence). Le Deck annonce son
+     profil au réveil (`wake-host.sh`, en SSH ou par un message réseau)
+     pour éviter toute coupure. Les autres clients sont reconnus par leur IP
+     à la connexion (LAN et IP WireGuard). En cas de changement de client,
+     gamescope est relancé et la première connexion échoue (reconnexion
+     30 à 60 s plus tard).
+   - Règle 2 : ne jamais relancer gamescope pendant une partie.
 
 ## Propositions faites, sans réponse de l'utilisateur
 
