@@ -180,6 +180,27 @@ if ((${#STEAM_SETTINGS[@]})); then
 fi
 
 echo "== Réseau"
+# Wi-Fi du PC : l'économie d'énergie de la carte provoque des pics de latence pendant le stream
+wifi_tune=$(for f in "${XDG_DATA_HOME:-$HOME/.local/share}/steamd/wifi/wifi-tune.sh" /usr/share/steamd/wifi/wifi-tune.sh; do
+    [[ -x $f ]] && { echo "$f"; break; }
+done)
+for w in /sys/class/net/*/wireless; do
+    [[ -e $w ]] || continue
+    w=$(basename "$(dirname "$w")")
+    if ! command -v iw >/dev/null; then
+        info "$w : iw absent, économie d'énergie du Wi-Fi non vérifiée (sudo pacman -S iw)"
+        break
+    fi
+    case $(iw dev "$w" get power_save 2>/dev/null) in
+        *": off"*) ok "$w : économie d'énergie du Wi-Fi désactivée" ;;
+        *": on"*)  warn "$w : économie d'énergie du Wi-Fi active (pics de latence pendant le stream)" \
+                       "${wifi_tune:-wifi/wifi-tune.sh} install (réappliqué à chaque connexion)" ;;
+        *)         info "$w : état de l'économie d'énergie du Wi-Fi inconnu (iw dev $w get power_save)" ;;
+    esac
+done
+if [[ -e /etc/NetworkManager/conf.d/99-steamd-wifi.conf ]]; then
+    ok "réglages wifi-tune installés (${wifi_tune:-wifi-tune.sh} status pour le détail)"
+fi
 # Les deux Steam visent les mêmes ports : ils doivent appartenir au cgroup de steamd
 cg=$(systemctl --user show -p ControlGroup --value steamd.service)
 svc_pids=$(cat "/sys/fs/cgroup$cg/cgroup.procs" 2>/dev/null)
