@@ -250,7 +250,7 @@ mapfile -t cfg_lines < <(
 )
 read -r fps_limit fps_method stream_tuning <<<"${cfg_lines[0]:-0 mangohud true}"
 if [[ $stream_tuning == true ]]; then
-	ok "optimisations stream actives pour les jeux de Steam headless (DXVK maxFrameLatency=1, ntsync)"
+	ok "optimisations stream actives pour les jeux de Steam headless (DXVK maxFrameLatency=1, DXVK/VKD3D low latency de Proton-CachyOS, ntsync)"
 	if [[ -e /dev/ntsync ]]; then
 		if [[ -r /dev/ntsync && -w /dev/ntsync ]]; then
 			ok "/dev/ntsync accessible"

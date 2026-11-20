@@ -169,7 +169,12 @@ build_command() {
 	if [[ $STREAM_TUNING == true ]]; then
 		# Une seule image préparée d'avance au lieu de 3 : moins de latence.
 		envs+=("DXVK_CONFIG=dxgi.maxFrameLatency=1;d3d9.maxFrameLatency=1")
-		# Synchronisation ntsync (noyau >= 6.14), ignorée si Proton ne la gère pas.
+		# Proton-CachyOS : variantes « low latency » de DXVK (D3D9-11) et de
+		# VKD3D-Proton (D3D12), meilleur rythme d'images. Ignorées par les
+		# autres versions de Proton.
+		envs+=("PROTON_DXVK_LOWLATENCY=1" "PROTON_VKD3D_LOWLATENCY=1")
+		# Synchronisation ntsync : non documentée par Proton-CachyOS, ignorée
+		# si la version de Proton ne la gère pas (voir steamd-doctor).
 		envs+=("PROTON_USE_NTSYNC=1")
 	fi
 	# Limite d'images par seconde. mangohud : couche Vulkan, couvre les jeux

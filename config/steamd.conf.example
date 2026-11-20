@@ -35,9 +35,15 @@ STEAM_EXTRA_ARGS=""
 #   DXVK_CONFIG=dxgi.maxFrameLatency=1;d3d9.maxFrameLatency=1
 #     une seule image préparée d'avance au lieu de 3 : moins de latence,
 #     un peu moins d'images par seconde quand le processeur est limitant
+#   PROTON_DXVK_LOWLATENCY=1 PROTON_VKD3D_LOWLATENCY=1
+#     Proton-CachyOS : variantes « low latency » de DXVK (Direct3D 9 à 11) et
+#     de VKD3D-Proton (Direct3D 12), meilleur rythme d'images ; ignorées par
+#     les autres versions de Proton
 #   PROTON_USE_NTSYNC=1
 #     synchronisation ntsync (moins de micro-saccades), ignorée si la version
-#     de Proton ne la gère pas
+#     de Proton ne la gère pas (steamd-doctor indique ce qu'il en est)
+# Pour retirer un seul de ces réglages, le remettre à 0 dans STEAM_ENV, par
+# exemple "PROTON_DXVK_LOWLATENCY=0".
 STREAM_TUNING=true
 
 # Limite d'images par seconde :

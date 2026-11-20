@@ -169,11 +169,13 @@ Tous les jeux lancés par le Steam headless reçoivent des réglages pensés pou
 
 | Réglage | Par défaut | Effet |
 |---|---|---|
-| `STREAM_TUNING=true` | actif | `DXVK_CONFIG=dxgi.maxFrameLatency=1;d3d9.maxFrameLatency=1` : une image préparée d'avance au lieu de 3, donc moins de latence. `PROTON_USE_NTSYNC=1` : synchronisation ntsync, moins de micro-saccades, ignorée si la version de Proton ne la gère pas |
+| `STREAM_TUNING=true` | actif | `DXVK_CONFIG=dxgi.maxFrameLatency=1;d3d9.maxFrameLatency=1` : une image préparée d'avance au lieu de 3, donc moins de latence. `PROTON_DXVK_LOWLATENCY=1` et `PROTON_VKD3D_LOWLATENCY=1` : variantes « low latency » de DXVK et VKD3D-Proton propres à [Proton-CachyOS](https://github.com/CachyOS/proton-cachyos), pour un meilleur rythme d'images, ignorées par les autres versions de Proton. `PROTON_USE_NTSYNC=1` : synchronisation ntsync, ignorée si la version de Proton ne la gère pas (non documentée par Proton-CachyOS, `steamd-doctor` vérifie) |
 | `FPS_LIMIT=auto` | = `REFRESH` | Plafond calé sur la fréquence de capture : le GPU garde de la marge pour capturer et encoder, et les images partent régulièrement. Pour un jeu lourd qui ne tient pas `REFRESH`, un sous-multiple (45 pour 90) est plus fluide qu'un rythme irrégulier |
 | `FPS_LIMIT_METHOD=mangohud` | MangoHud | Couche Vulkan invisible (paquet `mangohud`), qui couvre les jeux natifs comme ceux sous Proton. `dxvk` : limiteurs de DXVK et VKD3D-Proton, sans MangoHud. Repli automatique sur `dxvk` si MangoHud est absent |
 | `FPS_LIMIT_TIMING=late` | late | Avec MangoHud : `late` donne la latence la plus basse, `early` des intervalles plus réguliers |
-| `STEAM_ENV=(...)` | vide | Variables supplémentaires (`NOM=valeur`) pour tous les jeux. Elles passent en dernier et remplacent les précédentes si le nom est le même |
+| `STEAM_ENV=(...)` | vide | Variables supplémentaires (`NOM=valeur`) pour tous les jeux. Elles passent en dernier et remplacent les précédentes si le nom est le même, par exemple `"PROTON_DXVK_LOWLATENCY=0"` pour retirer un réglage |
+
+À essayer dans `STEAM_ENV` avec Proton-CachyOS et une carte RDNA4 : `PROTON_FSR4_UPGRADE=1` remplace FSR 3.1 par FSR 4 dans les jeux compatibles. Avec un upscaler en mode qualité, le GPU travaille moins et garde de la marge pour l'encodage dans les jeux lourds.
 
 `steamd-launch --print` affiche l'environnement exact donné aux jeux. `steamd-doctor` vérifie MangoHud et l'accès à `/dev/ntsync`. Il lit aussi le script de chaque version de Proton installée (Proton-CachyOS, GE-Proton, Proton officiel) pour indiquer quelle variable pilote ntsync. Pendant une partie, il confirme que le `wineserver` a bien ouvert `/dev/ntsync`.
 
