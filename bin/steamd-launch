@@ -18,6 +18,7 @@ CLIENT_PROFILES=()
 STREAM_TUNING=true FPS_LIMIT=auto FPS_LIMIT_METHOD=mangohud FPS_LIMIT_TIMING=late
 STEAM_ENV=()
 STEAM_SETTINGS=()
+NETWORK_WAIT=90
 STEAMD_HOME="${XDG_DATA_HOME:-$HOME/.local/share}/steamd-home"
 # shellcheck source=/dev/null
 [[ -r $CONF ]] && source "$CONF"
@@ -113,6 +114,7 @@ check_profiles() {
     for v in APP_WIDTH APP_HEIGHT; do
         [[ -z ${!v} ]] || valid_num "${!v}" || { log "$v invalide dans $CONF : « ${!v} »"; exit 2; }
     done
+    [[ $NETWORK_WAIT == 0 ]] || valid_num "$NETWORK_WAIT" || { log "NETWORK_WAIT invalide : « $NETWORK_WAIT » (secondes, 0 = pas d'attente)"; exit 2; }
     [[ $HDR == true || $HDR == false ]] || { log "HDR invalide dans $CONF : « $HDR » (true ou false)"; exit 2; }
     [[ $STREAM_TUNING == true || $STREAM_TUNING == false ]] || { log "STREAM_TUNING invalide : « $STREAM_TUNING » (true ou false)"; exit 2; }
     [[ $FPS_LIMIT == auto || $FPS_LIMIT == 0 ]] || valid_num "$FPS_LIMIT" || { log "FPS_LIMIT invalide : « $FPS_LIMIT » (auto, 0 ou un entier)"; exit 2; }
@@ -203,7 +205,11 @@ set_encoder() {
 
 case ${1:-} in
     --stop)
-        steam -shutdown >/dev/null 2>&1 || true
+        # Steam déjà mort (processus tués) : steam -shutdown en lancerait un complet,
+        # sur l'écran du bureau si la session a exporté DISPLAY dans systemd
+        if [[ -n ${MAINPID:-} ]] && ! kill -0 "$MAINPID" 2>/dev/null; then exit 0; fi
+        pgrep -u "$UID" -f "$HOME/.local/share/Steam/" >/dev/null || exit 0
+        env -u DISPLAY -u WAYLAND_DISPLAY steam -shutdown >/dev/null 2>&1 || true
         for _ in $(seq 40); do
             [[ -n ${MAINPID:-} ]] && kill -0 "$MAINPID" 2>/dev/null || exit 0
             sleep 1
@@ -222,9 +228,33 @@ case ${1:-} in
         exec steam ;;
 esac
 
+# Au boot (linger), le service part avant le réseau : Steam démarrerait hors ligne,
+# sans s'annoncer sur le réseau local
+wait_network() {
+    local i
+    for ((i = 0; i < NETWORK_WAIT; i++)); do
+        # Route par une interface physique : un VPN (gpd0, wg0, tun0...) ne sert pas à la découverte locale
+        ip -4 route show default 2>/dev/null | grep -qvE 'dev (lo|tun|tap|wg|gpd|ppp|tailscale|zt)' && { ((i == 0)) || log "réseau prêt après $i s"; return 0; }
+        ((i == 0)) && log "attente du réseau (route par défaut, $NETWORK_WAIT s au plus)"
+        sleep 1
+    done
+    ((NETWORK_WAIT == 0)) || log "pas de réseau après $NETWORK_WAIT s, démarrage quand même"
+}
+
+# Port de découverte déjà pris (Steam du bureau) : le Deck ne verrait pas steamd
+check_ports() {
+    local held
+    held=$(ss -Hulnp '( sport = :27036 )' 2>/dev/null | grep -o 'pid=[0-9]*' | cut -d= -f2 | sort -u) || return 0
+    [[ -n $held ]] || return 0
+    log "port UDP 27036 déjà tenu par $(ps -o pid=,args= -p "${held//$'\n'/,}" 2>/dev/null | cut -c1-80 | paste -sd';')"
+    log "→ désactiver Remote Play dans le Steam du bureau, puis systemctl --user restart steamd"
+}
+
 check_profiles
 set_encoder
 apply_settings
+wait_network
+check_ports
 
 active=$(cat "$PROFILE_FILE" 2>/dev/null || echo default)
 if ! select_profile "$active"; then

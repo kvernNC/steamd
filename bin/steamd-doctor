@@ -203,6 +203,35 @@ done
 if [[ -e /etc/NetworkManager/conf.d/99-steamd-wifi.conf ]]; then
     ok "réglages wifi-tune installés (${wifi_tune:-wifi-tune.sh} status pour le détail)"
 fi
+# Connexion réservée à l'utilisateur (secret dans KWallet) : pas de réseau avant la session Plasma
+if command -v nmcli >/dev/null; then
+    while IFS=: read -r name type; do
+        [[ $type == *wireless* || $type == *ethernet* ]] || continue
+        perms=$(nmcli -g connection.permissions connection show "$name" 2>/dev/null)
+        flags=$(nmcli -g 802-11-wireless-security.psk-flags connection show "$name" 2>/dev/null)
+        if [[ -n $perms || $flags == 1* ]]; then
+            warn "connexion « $name » ouverte seulement à la session : réseau absent au boot pour steamd" \
+                "nmcli connection modify \"$name\" connection.permissions \"\" 802-11-wireless-security.psk-flags 0 (Plasma : « Tous les utilisateurs peuvent se connecter »)"
+        else
+            ok "connexion « $name » disponible dès le boot"
+        fi
+    done < <(nmcli -t -f NAME,TYPE connection show --active 2>/dev/null)
+fi
+# Steam du bureau lancé sans être voulu : démarrage automatique ou restauration de session Plasma
+cfg=${XDG_CONFIG_HOME:-$HOME/.config}
+for f in "$cfg"/autostart/*.desktop /etc/xdg/autostart/*.desktop; do
+    [[ -r $f ]] && grep -qE '^Exec=(.*/)?steam( |$)' "$f" || continue
+    [[ $f == /etc/* && -e $cfg/autostart/${f##*/} ]] && continue   # masqué par la copie utilisateur
+    grep -qE '^(Hidden=true|X-GNOME-Autostart-enabled=false)' "$f" && continue
+    warn "Steam du bureau lancé à l'ouverture de session ($f)" \
+        "Paramètres système > Démarrage automatique, ou printf '[Desktop Entry]\\nHidden=true\\n' > $cfg/autostart/${f##*/}"
+done
+ksm=$cfg/ksmserverrc
+if [[ -r $ksm ]] && ! grep -qx 'loginMode=emptySession' "$ksm" \
+    && grep -qE '^(program|restartCommand)[0-9]*=.*steam( |,|$)' "$ksm" && ! grep -qE '^excludeApps=.*steam' "$ksm"; then
+    warn "Plasma relance le Steam du bureau en restaurant la session précédente" \
+        "Paramètres système > Session > Session du bureau : « Commencer avec une session vide », ou y exclure steam"
+fi
 # Les deux Steam visent les mêmes ports : ils doivent appartenir au cgroup de steamd
 cg=$(systemctl --user show -p ControlGroup --value steamd.service)
 svc_pids=$(cat "/sys/fs/cgroup$cg/cgroup.procs" 2>/dev/null)
