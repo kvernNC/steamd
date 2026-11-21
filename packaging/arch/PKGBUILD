@@ -1,7 +1,7 @@
 # Paquet construit depuis l'arbre du dépôt : cd packaging/arch && makepkg -si
 pkgname=steamd
 pkgver=0.1.0
-pkgrel=1
+pkgrel=2
 pkgdesc="Steam headless dans gamescope en service utilisateur, pour Steam Remote Play"
 arch=('x86_64')
 license=('MIT')
