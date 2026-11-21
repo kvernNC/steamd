@@ -77,7 +77,7 @@ done
 
 echo "→ arrêt et désactivation des services"
 systemctl --user disable --now steamd-profiled.service steamd.service 2>/dev/null || true
-# Sortie audio créée par AUDIO_ISOLATE
+# Sortie audio des versions précédentes d'AUDIO_ISOLATE (module-null-sink sur le PipeWire du bureau)
 if command -v pactl >/dev/null; then
     # shellcheck source=/dev/null
     sink=$( [[ -r $CONFDIR/steamd.conf ]] && source "$CONFDIR/steamd.conf"; echo "${AUDIO_SINK:-steamd}" )

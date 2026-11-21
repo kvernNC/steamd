@@ -13,7 +13,7 @@ set -euo pipefail
 CONF="${XDG_CONFIG_HOME:-$HOME/.config}/steamd/steamd.conf"
 WIDTH=1280 HEIGHT=800 REFRESH=60 STEAM_CAPTURE=pipewire-dmabuf
 GAMESCOPE_EXTRA_ARGS="" STEAM_EXTRA_ARGS="" ENCODER="" VAAPI_STRICT_RC=false AMF_ENCODER=false
-AUDIO_ISOLATE=false AUDIO_SINK=steamd
+AUDIO_ISOLATE=true
 APP_WIDTH="" APP_HEIGHT="" HDR=false
 CLIENT_PROFILES=()
 STREAM_TUNING=true FPS_LIMIT=auto FPS_LIMIT_METHOD=mangohud FPS_LIMIT_TIMING=late
@@ -118,6 +118,7 @@ check_profiles() {
     [[ $NETWORK_WAIT == 0 ]] || valid_num "$NETWORK_WAIT" || { log "NETWORK_WAIT invalide : « $NETWORK_WAIT » (secondes, 0 = pas d'attente)"; exit 2; }
     [[ $HDR == true || $HDR == false ]] || { log "HDR invalide dans $CONF : « $HDR » (true ou false)"; exit 2; }
     [[ $STREAM_TUNING == true || $STREAM_TUNING == false ]] || { log "STREAM_TUNING invalide : « $STREAM_TUNING » (true ou false)"; exit 2; }
+    [[ $AUDIO_ISOLATE == true || $AUDIO_ISOLATE == false ]] || { log "AUDIO_ISOLATE invalide : « $AUDIO_ISOLATE » (true ou false)"; exit 2; }
     [[ $AMF_ENCODER == true || $AMF_ENCODER == false ]] || { log "AMF_ENCODER invalide : « $AMF_ENCODER » (true ou false)"; exit 2; }
     [[ $FPS_LIMIT == auto || $FPS_LIMIT == 0 ]] || valid_num "$FPS_LIMIT" || { log "FPS_LIMIT invalide : « $FPS_LIMIT » (auto, 0 ou un entier)"; exit 2; }
     [[ $FPS_LIMIT_METHOD == mangohud || $FPS_LIMIT_METHOD == dxvk ]] || { log "FPS_LIMIT_METHOD invalide : « $FPS_LIMIT_METHOD » (mangohud ou dxvk)"; exit 2; }
@@ -361,34 +362,53 @@ if [[ $AMF_ENCODER == true ]]; then
     fi
 fi
 
-# Sortie audio dédiée : Remote Play ne capture plus le son du bureau, et le jeu ne sort plus sur le PC
-if [[ $AUDIO_ISOLATE == true ]]; then
-    if ! [[ $AUDIO_SINK =~ ^[A-Za-z0-9_.-]+$ ]]; then
-        log "AUDIO_SINK invalide dans $CONF : « $AUDIO_SINK »"
-        exit 2
+# Audio isolé : PipeWire dédié à Steam headless, dans son propre XDG_RUNTIME_DIR (pressure-vessel
+# y prend pipewire-0 et pulse/native). Au début d'un stream, Steam fait de steam-streaming-playback
+# la sortie par défaut : sur le PipeWire de la session, le bureau y basculerait aussi.
+# Les processus restent dans le cgroup du service et s'arrêtent avec lui.
+start_audio() {
+    local dir=$RUNDIR/audio b i pids=()
+    for b in pipewire pipewire-pulse wireplumber; do
+        command -v "$b" >/dev/null || { log "AUDIO_ISOLATE : $b introuvable, son partagé avec le bureau"; return 1; }
+    done
+    rm -rf "$dir"
+    mkdir -p -m 700 "$dir/config/wireplumber/wireplumber.conf.d" "$dir/state"
+    cat >"$dir/config/wireplumber/wireplumber.conf.d/90-steamd.conf" <<'EOF'
+# Instance de Steam headless (steamd) : aucune carte son, aucune réservation de périphérique
+wireplumber.profiles = {
+  main = {
+    monitor.alsa = disabled
+    monitor.alsa-midi = disabled
+    monitor.bluez = disabled
+    monitor.bluez-midi = disabled
+    monitor.v4l2 = disabled
+    monitor.libcamera = disabled
+  }
+}
+EOF
+    XDG_RUNTIME_DIR=$dir pipewire >"$dir/pipewire.log" 2>&1 &
+    pids+=($!)
+    for ((i = 0; i < 50; i++)); do [[ -e $dir/pipewire-0 ]] && break; sleep 0.1; done
+    XDG_RUNTIME_DIR=$dir pipewire-pulse >"$dir/pipewire-pulse.log" 2>&1 &
+    pids+=($!)
+    XDG_RUNTIME_DIR=$dir XDG_CONFIG_HOME=$dir/config XDG_STATE_HOME=$dir/state wireplumber >"$dir/wireplumber.log" 2>&1 &
+    pids+=($!)
+    for ((i = 0; i < 50; i++)); do [[ -e $dir/pulse/native ]] && break; sleep 0.1; done
+    if [[ ! -e $dir/pipewire-0 || ! -e $dir/pulse/native ]]; then
+        log "AUDIO_ISOLATE : PipeWire dédié non démarré (journaux dans $dir), son partagé avec le bureau"
+        kill "${pids[@]}" 2>/dev/null || true
+        return 1
     fi
-    if ! command -v pactl >/dev/null; then
-        log "AUDIO_ISOLATE : pactl introuvable (sudo pacman -S libpulse), son non isolé"
-    else
-        sinks=$(pactl list short sinks 2>/dev/null) || sinks=""
-        if awk -v n="$AUDIO_SINK" '$2 == n {f = 1} END {exit !f}' <<<"$sinks"; then
-            export PULSE_SINK=$AUDIO_SINK PULSE_SOURCE=$AUDIO_SINK.monitor
-        else
-            default=$(pactl get-default-sink 2>/dev/null) || default=""
-            if pactl load-module module-null-sink sink_name="$AUDIO_SINK" \
-                sink_properties=device.description="$AUDIO_SINK" >/dev/null 2>&1; then
-                # La nouvelle sortie ne doit pas devenir celle du bureau
-                if [[ -n $default && $(pactl get-default-sink 2>/dev/null) == "$AUDIO_SINK" ]]; then
-                    pactl set-default-sink "$default" || true
-                fi
-                log "sortie audio $AUDIO_SINK créée"
-                export PULSE_SINK=$AUDIO_SINK PULSE_SOURCE=$AUDIO_SINK.monitor
-            else
-                log "AUDIO_ISOLATE : création de la sortie $AUDIO_SINK impossible (PipeWire joignable ?), son non isolé"
-            fi
-        fi
+    # Le bus de session (icône du tray) et le Wayland du bureau, que gamescope ouvre s'il est
+    # défini, ne se déduisent plus de XDG_RUNTIME_DIR : chemins absolus
+    export DBUS_SESSION_BUS_ADDRESS=${DBUS_SESSION_BUS_ADDRESS:-unix:path=$XDG_RUNTIME_DIR/bus}
+    if [[ -n ${WAYLAND_DISPLAY:-} && $WAYLAND_DISPLAY != /* ]]; then
+        export WAYLAND_DISPLAY=$XDG_RUNTIME_DIR/$WAYLAND_DISPLAY
     fi
-fi
+    export XDG_RUNTIME_DIR=$dir
+    log "audio isolé : PipeWire dédié dans $dir"
+}
+if [[ $AUDIO_ISOLATE == true ]]; then start_audio || true; fi
 
 case $STEAM_CAPTURE in
     pipewire-dmabuf) capture=(-pipewire-dmabuf) ;;

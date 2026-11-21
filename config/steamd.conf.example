@@ -49,8 +49,7 @@ STEAM_CAPTURE=pipewire-dmabuf   # pipewire-dmabuf | pipewire | none
 GAMESCOPE_EXTRA_ARGS=""         # ex. "--verbose"
 STEAM_EXTRA_ARGS=""
 ENCODER=""                      # hardware | software (x264) | vide = réglage de l'UI ; software conseillé sur GPU AMD
-AUDIO_ISOLATE=false             # true : sortie audio dédiée, le stream n'a plus le son du bureau et le PC reste muet
-#AUDIO_SINK=steamd              # nom de cette sortie
+AUDIO_ISOLATE=true              # PipeWire dédié à Steam headless : le bureau garde sa sortie pendant un stream, le stream n'a pas son son
 VAAPI_STRICT_RC=false           # true (recommandé sur GPU AMD, avec ENCODER=hardware) : CBR et tampon d’une image, comme Sunshine
 AMF_ENCODER=false               # true (GPU AMD, ENCODER=hardware) : encodeur AMF de Steam, le seul qui fait de l’AV1 (amf-amdgpu-pro requis)
 NETWORK_WAIT=90                 # au boot, attente du réseau avant Steam (s) ; 0 = pas d'attente

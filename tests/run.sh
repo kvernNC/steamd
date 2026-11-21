@@ -42,7 +42,7 @@ wait_for() {
 # Conf de test : STEAMD_HOME dans le dossier temporaire, puis les lignes données
 reset() {
     pkill -f "$FAKE" 2>/dev/null
-    rm -rf "$FAKE"/{run,cg,events,gamescope.out,sinks,default-sink,pactl.log,pactl-ko,power,peers,steampid,inactive,steam.log,inhibit.pid}
+    rm -rf "$FAKE"/{run,cg,events,gamescope.out,sinks,default-sink,pactl.log,pactl-ko,power,peers,steampid,inactive,steam.log,inhibit.pid,audio.log,pw-ko}
     mkdir -p "$HOME/.config/steamd" "$XDG_RUNTIME_DIR/steamd" "$FAKE/cg/steamd" "$STEAMDIR/userdata/42/config"
     printf '"UserLocalConfigStore"\n{\n\t"Streaming"\n\t{\n\t\t"EnableHardwareEncoding"\t\t"0"\n\t}\n}\n' \
         >"$STEAMDIR/userdata/42/config/localconfig.vdf"
@@ -79,7 +79,7 @@ t_config() {
         'STEAM_ENV=("pas bon")' 'STEAM_SETTINGS=("sans-deux-points=1")' \
         'CLIENT_PROFILES=("tv OUTPUT=1920x1080")' 'CLIENT_PROFILES=("1.2.3.4 OUTPUT=4k")' \
         'CLIENT_PROFILES=("1.2.3.4 OUTPUT=0x800")' 'CLIENT_PROFILES=("1.2.3.4 COULEUR=bleu")' \
-        "AUDIO_ISOLATE=true AUDIO_SINK='a b'"; do
+        "AUDIO_ISOLATE=oui"; do
         reset "$c"
         launch
         check "« $c » refusé, gamescope non lancé" '[[ $(code) == 2 && ! -e $FAKE/gamescope.out ]]'
@@ -192,22 +192,31 @@ t_amf_env() {
 }
 
 t_audio() {
-    echo "== AUDIO_ISOLATE"
+    echo "== AUDIO_ISOLATE : PipeWire dédié à Steam headless"
+    local dir=$XDG_RUNTIME_DIR/steamd/audio
     reset "AUDIO_ISOLATE=true"
-    launch; launch; launch
-    check "sortie créée une seule fois en trois lancements" '[[ $(grep -c load-module "$FAKE/pactl.log") == 1 ]]'
-    check "sortie par défaut du bureau conservée" '[[ $(cat "$FAKE/default-sink") == speakers ]]'
-    check "Steam envoyé sur la sortie et son moniteur" 'grep -q "^ENV PULSE_SINK=steamd" "$FAKE/gamescope.out" && grep -q "^ENV PULSE_SOURCE=steamd.monitor" "$FAKE/gamescope.out"'
+    DBUS_SESSION_BUS_ADDRESS="" launch
+    check "pipewire, pipewire-pulse et wireplumber lancés dans leur propre XDG_RUNTIME_DIR" '[[ $(grep -c "XDG_RUNTIME_DIR=$dir" "$FAKE/audio.log") == 3 ]]'
+    check "wireplumber : configuration et état sous ce dossier" 'grep -q "XDG_CONFIG_HOME=$dir/config XDG_STATE_HOME=$dir/state" "$FAKE/audio.log"'
+    check "wireplumber : aucune carte son ni Bluetooth" 'grep -q "monitor.alsa = disabled" "$dir/config/wireplumber/wireplumber.conf.d/90-steamd.conf" && grep -q "monitor.bluez = disabled" "$dir/config/wireplumber/wireplumber.conf.d/90-steamd.conf"'
+    check "gamescope et Steam sur ce PipeWire, bus de session déduit de l'ancien dossier" 'grep -qx "ENV XDG_RUNTIME_DIR=$dir" "$FAKE/gamescope.out" && grep -qx "ENV DBUS_SESSION_BUS_ADDRESS=unix:path=$XDG_RUNTIME_DIR/bus" "$FAKE/gamescope.out"'
     reset "AUDIO_ISOLATE=true"
-    touch "$FAKE/pactl-ko"
+    DBUS_SESSION_BUS_ADDRESS=unix:path=/tmp/bus-test WAYLAND_DISPLAY=wayland-1 launch
+    check "bus de session déjà défini : conservé" 'grep -qx "ENV DBUS_SESSION_BUS_ADDRESS=unix:path=/tmp/bus-test" "$FAKE/gamescope.out"'
+    check "Wayland du bureau en chemin absolu (gamescope l'ouvre)" 'grep -qx "ENV WAYLAND_DISPLAY=$XDG_RUNTIME_DIR/wayland-1" "$FAKE/gamescope.out"'
+    check "PipeWire du bureau intact (aucune sortie ajoutée)" '! grep -q load-module "$FAKE/pactl.log" 2>/dev/null'
+    reset "AUDIO_ISOLATE=true"
+    touch "$FAKE/pw-ko"
     launch
-    check "PipeWire injoignable : avertissement, Steam lancé sans isolation" '[[ $(code) == 0 ]] && grep -q "son non isolé" "$FAKE/launch.out" && ! grep -q PULSE_SINK "$FAKE/gamescope.out"'
-    rm -f "$FAKE/pactl-ko"
-    reset "AUDIO_ISOLATE=true" "AUDIO_SINK=stream"
+    check "PipeWire dédié en échec : avertissement, Steam lancé sur celui du bureau" '[[ $(code) == 0 ]] && grep -q "son partagé avec le bureau" "$FAKE/launch.out" && grep -qx "ENV XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR" "$FAKE/gamescope.out"'
+    rm -f "$FAKE/pw-ko"
+    reset "AUDIO_ISOLATE=false"
     launch
-    printf 'autre\n' >>"$FAKE/sinks"
+    check "AUDIO_ISOLATE=false : rien de lancé" '[[ ! -e $FAKE/audio.log ]] && grep -qx "ENV XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR" "$FAKE/gamescope.out"'
+    reset
+    printf 'steamd\nautre\n' >"$FAKE/sinks"
     "$ROOT/bin/steamd-setup" --undo >/dev/null 2>&1
-    check "steamd-setup --undo retire seulement sa sortie" '[[ $(cat "$FAKE/sinks") == autre ]]'
+    check "steamd-setup --undo retire la sortie des versions précédentes, et elle seule" '[[ $(cat "$FAKE/sinks") == autre ]]'
 }
 
 t_steamcfg() {

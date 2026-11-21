@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# Faux pipewire : note son XDG_RUNTIME_DIR et crée le socket. $FAKE/pw-ko : ne démarre pas.
+echo "pipewire XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR" >>"$FAKE/audio.log"
+[[ -e $FAKE/pw-ko ]] && exit 1
+touch "$XDG_RUNTIME_DIR/pipewire-0"

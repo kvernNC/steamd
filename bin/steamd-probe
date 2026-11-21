@@ -91,7 +91,7 @@ cmd_rapport() {
         if [[ -n $p ]]; then
             echo "Steam de steamd : pid $p"
             grep -q libsteamd-vaapi "/proc/$p/maps" && echo "libsteamd-vaapi chargée" || echo "libsteamd-vaapi non chargée"
-            tr '\0' '\n' <"/proc/$p/environ" | grep -E '^(LD_PRELOAD|PULSE_SINK|PULSE_SOURCE|STEAMD_VA_)'
+            tr '\0' '\n' <"/proc/$p/environ" | grep -E '^(LD_PRELOAD|XDG_RUNTIME_DIR|STEAMD_VA_|STEAMD_AMF_)'
         else
             echo "Steam de steamd arrêté"
         fi
@@ -99,6 +99,12 @@ cmd_rapport() {
 
         section "Audio"
         command -v pactl >/dev/null && { run pactl get-default-sink; run pactl list short sinks; }
+        audio=${XDG_RUNTIME_DIR:-/run/user/$UID}/steamd/audio
+        if [[ -e $audio/pulse/native ]] && command -v pactl >/dev/null; then
+            echo "PipeWire dédié de Steam headless ($audio) :"
+            XDG_RUNTIME_DIR=$audio run pactl get-default-sink
+            XDG_RUNTIME_DIR=$audio run pactl list short sinks
+        fi
 
         section "Couches Vulkan implicites"
         ls -1 /usr/share/vulkan/implicit_layer.d/ "$HOME/.local/share/vulkan/implicit_layer.d/" 2>/dev/null

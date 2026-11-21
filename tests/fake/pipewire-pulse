@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+# Faux pipewire-pulse : crée le socket PulseAudio de son XDG_RUNTIME_DIR
+echo "pipewire-pulse XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR" >>"$FAKE/audio.log"
+mkdir -p "$XDG_RUNTIME_DIR/pulse" && touch "$XDG_RUNTIME_DIR/pulse/native"
