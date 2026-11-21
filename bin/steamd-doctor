@@ -17,6 +17,14 @@ STEAM_SETTINGS=()
 # shellcheck source=/dev/null
 [[ -r $CONF ]] && source "$CONF"
 
+# Steam de steamd (HOME dédié), pas celui du bureau
+steamd_pid() {
+    local p
+    for p in $(pgrep -u "$UID" -x steam); do
+        tr '\0' '\n' <"/proc/$p/environ" 2>/dev/null | grep -qx "HOME=$(readlink -m "$STEAMD_HOME")" && { echo "$p"; return; }
+    done
+}
+
 echo "== Binaires"
 check "gamescope installé ($(gamescope --version 2>&1 | head -n1))" "sudo pacman -S gamescope" command -v gamescope
 check "steam installé" "sudo pacman -S steam" command -v steam
@@ -84,19 +92,27 @@ if [[ ${AUDIO_ISOLATE:-false} == true ]]; then
         bash -c 'pactl list short sinks | awk "{print \$2}" | grep -qx "$1"' _ "$sink"
     check "sortie audio du bureau différente de $sink" "pactl set-default-sink <ta sortie>" \
         bash -c '[[ $(pactl get-default-sink) != "$1" ]]' _ "$sink"
-    sp=$(pgrep -u "$UID" -x steam | head -n1)
+    sp=$(steamd_pid)
     check "Steam de steamd envoyé sur $sink" "systemctl --user restart steamd" \
         bash -c 'tr "\0" "\n" < "/proc/$1/environ" | grep -qx "PULSE_SINK=$2"' _ "${sp:-0}" "$sink"
 fi
 if [[ ${VAAPI_STRICT_RC:-false} == true ]]; then
-    sp=$(pgrep -u "$UID" -x steam | head -n1)
+    sp=$(steamd_pid)
     check "libsteamd-vaapi chargée dans Steam (VAAPI_STRICT_RC)" "le runtime Steam a peut-être retiré LD_PRELOAD : journalctl --user -u steamd | grep steamd-vaapi" \
         grep -q libsteamd-vaapi "/proc/${sp:-0}/maps"
 fi
 if [[ ${AMF_ENCODER:-false} == true ]]; then
-    sp=$(pgrep -u "$UID" -x steam | head -n1)
-    check "AMF installé (AMF_ENCODER)" "paquet amf-amdgpu-pro (AUR sur Arch, amdgpu-install --usecase=amf sur Ubuntu)" \
-        bash -c 'ldconfig -p | grep -q "libamfrt64.so.1 "'
+    sp=$(steamd_pid)
+    launch="$(dirname "$(readlink -f "$0")")/steamd-launch"
+    if amf=$("$launch" --amf-path 2>/dev/null); then
+        ok "AMF installé : $amf (AMF_ENCODER)"
+    else
+        bad "AMF installé (AMF_ENCODER)" "$("$launch" --amf-path 2>&1 >/dev/null)"
+    fi
+    if command -v vainfo >/dev/null; then
+        check "GPU capable d'encoder l'AV1 (AMF_ENCODER)" "RDNA3 ou plus récente requise (RX 7000, RX 9000)" \
+            bash -c 'vainfo 2>/dev/null | grep -E "VAProfileAV1Profile0[[:space:]]*:[[:space:]]*VAEntrypointEncSlice"'
+    fi
     check "libsteamd-amf et AMF chargés dans Steam (AMF_ENCODER)" "journalctl --user -u steamd | grep steamd-amf" \
         bash -c 'grep -q libsteamd-amf "/proc/$1/maps" && grep -q libamfrt64 "/proc/$1/maps"' _ "${sp:-0}"
 fi

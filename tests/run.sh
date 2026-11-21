@@ -17,6 +17,8 @@ trap 'kill $(jobs -p) 2>/dev/null; pkill -f "$FAKE" 2>/dev/null; rm -rf "$FAKE"'
 
 export PATH="$ROOT/tests/fake:$PATH"
 export HOME=$FAKE/home XDG_RUNTIME_DIR=$FAKE/run STEAMD_CGROUP_ROOT=$FAKE/cg
+# Ni les bibliothèques installées ni le cache de ld.so de la machine
+export STEAMD_SYSLIBDIR=$FAKE/syslib STEAMD_LDCONFIG=false
 unset XDG_CONFIG_HOME XDG_DATA_HOME XDG_CACHE_HOME XDG_STATE_HOME
 SD=$FAKE/sd                       # STEAMD_HOME du client steamd
 STEAMDIR=$SD/.local/share/Steam
@@ -40,7 +42,7 @@ wait_for() {
 # Conf de test : STEAMD_HOME dans le dossier temporaire, puis les lignes données
 reset() {
     pkill -f "$FAKE" 2>/dev/null
-    rm -rf "$FAKE"/{run,cg,events,gamescope.out,sinks,default-sink,pactl.log,pactl-ko,power,peers,steampid,inactive,steam.log}
+    rm -rf "$FAKE"/{run,cg,events,gamescope.out,sinks,default-sink,pactl.log,pactl-ko,power,peers,steampid,inactive,steam.log,inhibit.pid}
     mkdir -p "$HOME/.config/steamd" "$XDG_RUNTIME_DIR/steamd" "$FAKE/cg/steamd" "$STEAMDIR/userdata/42/config"
     printf '"UserLocalConfigStore"\n{\n\t"Streaming"\n\t{\n\t\t"EnableHardwareEncoding"\t\t"0"\n\t}\n}\n' \
         >"$STEAMDIR/userdata/42/config/localconfig.vdf"
@@ -48,6 +50,7 @@ reset() {
 }
 launch() { "$LAUNCH" "$@" >"$FAKE/launch.out" 2>&1; echo $? >"$FAKE/launch.code"; }
 code() { cat "$FAKE/launch.code"; }
+inhibited() { [[ -s $FAKE/inhibit.pid ]] && kill -0 "$(cat "$FAKE/inhibit.pid")" 2>/dev/null; }
 args() { grep '^ARGS' "$FAKE/gamescope.out" 2>/dev/null; }
 
 # --- Tests ------------------------------------------------------------------
@@ -157,7 +160,7 @@ t_vaapi_env() {
 
 t_amf_env() {
     echo "== AMF_ENCODER : préchargement"
-    export STEAMD_AMF_RT=$FAKE/amf/libamfrt64.so.1
+    export STEAMD_AMF_RT=$FAKE/amf/libamfrt64.so.1 STEAMD_AMF_DIRS=$FAKE/vide
     mkdir -p "$HOME/.local/share/steamd" && echo fausse >"$HOME/.local/share/steamd/libsteamd-amf.so"
     reset "ENCODER=hardware" "AMF_ENCODER=true"
     launch
@@ -169,8 +172,23 @@ t_amf_env() {
     reset "AMF_ENCODER=oui"
     launch
     check "valeur invalide : code 2" '[[ $(code) == 2 ]]'
-    rm -rf "$HOME/.local/share/steamd/libsteamd-amf.so" "$FAKE/amf"
     unset STEAMD_AMF_RT
+
+    # Paquet d'AMD hors du cache de ld.so, moteur d'encodage dans un autre dossier
+    export STEAMD_AMF_DIRS="$FAKE/vide $FAKE/opt/lib64 $FAKE/opt/enc"
+    mkdir -p "$FAKE/opt/lib64" "$FAKE/opt/enc" && touch "$FAKE/opt/lib64/libamfrt64.so.1" "$FAKE/opt/enc/libamdenc64.so.1.0"
+    reset "ENCODER=hardware" "AMF_ENCODER=true"
+    launch
+    check "AMF trouvé hors de ld.so, dossiers de libamfrt64 et libamdenc64" 'grep -qx "ENV STEAMD_AMF_DIR=$FAKE/opt/lib64:$FAKE/opt/enc" "$FAKE/gamescope.out"'
+    check "--amf-path : chemin trouvé" '[[ $("$LAUNCH" --amf-path) == "$FAKE/opt/lib64/libamfrt64.so.1" ]]'
+    rm -rf "$FAKE/opt"
+    printf 'ID=pop\nID_LIKE="ubuntu debian"\n' >"$FAKE/os-release"
+    check "--amf-path : absent, code 1 et paquet de la distribution" '! STEAMD_OS_RELEASE=$FAKE/os-release "$LAUNCH" --amf-path 2>"$FAKE/amf.err" && grep -q "amdgpu-install --usecase=amf" "$FAKE/amf.err"'
+    printf 'ID=cachyos\nID_LIKE=arch\n' >"$FAKE/os-release"
+    STEAMD_OS_RELEASE=$FAKE/os-release launch
+    check "AMF absent : paquet AUR proposé sur une dérivée d'Arch" 'grep -q "paquet AUR amf-amdgpu-pro" "$FAKE/launch.out"'
+    rm -rf "$HOME/.local/share/steamd/libsteamd-amf.so" "$FAKE/amf" "$FAKE/os-release" "$FAKE/amf.err"
+    unset STEAMD_AMF_DIRS
 }
 
 t_audio() {
@@ -277,15 +295,15 @@ t_game() {
     sleep 0.5
     start_game
     check "partie : profil d'énergie performance" 'wait_for "[[ \$(cat \$FAKE/power 2>/dev/null) == performance ]]" 5'
-    check "partie : veille bloquée" 'pgrep -xf "sleep infinity" >/dev/null'
+    check "partie : veille bloquée" 'inhibited'
     stop_game
     check "fin de partie : profil balanced restauré" 'wait_for "[[ \$(cat \$FAKE/power) == balanced ]]" 5'
-    check "fin de partie : veille libérée" 'wait_for "! pgrep -xf \"sleep infinity\" >/dev/null" 5'
+    check "fin de partie : veille libérée" 'wait_for "! inhibited" 5'
     start_game
     wait_for '[[ $(cat "$FAKE/power") == performance ]]' 5
     stop_profiled
     check "service arrêté en pleine partie : profil restauré" '[[ $(cat "$FAKE/power") == balanced ]]'
-    check "service arrêté en pleine partie : veille libérée" 'wait_for "! pgrep -xf \"sleep infinity\" >/dev/null" 3'
+    check "service arrêté en pleine partie : veille libérée" 'wait_for "! inhibited" 3'
     kill "$GAME" 2>/dev/null
     reset "GAME_POWER_PROFILE=turbo"
     "$PROFILED" 2>/dev/null
@@ -307,6 +325,33 @@ t_desktop() {
     check "relancé à la main : laissé ensuite" 'pgrep -f "$HOME/.local/share/Steam/" >/dev/null'
     check "un seul -shutdown" '[[ $(wc -l <"$FAKE/steam.log") == 1 ]]'
     kill %% 2>/dev/null
+}
+
+t_amf() {
+    echo "== libsteamd-amf (dlopen de libamdenc64.so sans version, dossiers STEAMD_AMF_DIR)"
+    local b=$FAKE/amfc
+    if ! command -v cc >/dev/null; then
+        skip "cc absent (sudo pacman -S gcc)"
+        return
+    fi
+    mkdir -p "$b/a" "$b/b"
+    printf '%s\n' '#include <dlfcn.h>' '#include <stdio.h>' \
+        'int main(void) { void *h = dlopen("libamdenc64.so", RTLD_NOW); int (*f)(void) = h ? (int (*)(void))dlsym(h, "amdenc_ok") : 0;' \
+        'printf("%d\n", h ? (f ? f() : 1) : 0); return 0; }' >"$b/host.c"
+    cc -o "$b/host" "$b/host.c" -ldl
+    if ! cc -O2 -Wall -Wextra -Werror -fPIC -shared -o "$b/libsteamd-amf.so" "$ROOT/src/steamd-amf.c" -ldl 2>"$b/cc.log"; then
+        ko "compilation sans avertissement ($(head -1 "$b/cc.log"))"
+        return
+    fi
+    ok "compilation sans avertissement"
+    if [[ $("$b/host") != 0 ]]; then
+        skip "vrai libamdenc64.so installé : il serait trouvé avant la fausse"
+        return
+    fi
+    echo 'int amdenc_ok(void) { return 42; }' >"$b/enc.c"
+    cc -shared -fPIC -Wl,-soname,libamdenc64.so.1.0 -o "$b/b/libamdenc64.so.1.0" "$b/enc.c"
+    check "libamdenc64.so trouvée dans le second dossier" '[[ $(STEAMD_AMF_DIR=$b/a:$b/b LD_PRELOAD=$b/libsteamd-amf.so "$b/host") == 42 ]]'
+    check "hors des dossiers : dlopen inchangé (échec)" '[[ $(STEAMD_AMF_DIR=$b/a LD_PRELOAD=$b/libsteamd-amf.so "$b/host") == 0 ]]'
 }
 
 t_vaapi() {
@@ -335,7 +380,7 @@ t_vaapi() {
     check "HRD d'une image à 90 i/s (fréquence transmise)" '[[ $(grep -c "pilote HRD=200000 plein=150000" "$b/avec.out") == 2 ]]'
 }
 
-ALL=(launch config profiles tuning encoder vaapi_env amf_env audio steamcfg profiled game desktop vaapi)
+ALL=(launch config profiles tuning encoder vaapi_env amf_env audio steamcfg profiled game desktop vaapi amf)
 for t in "${@:-${ALL[@]}}"; do
     if declare -F "t_$t" >/dev/null; then "t_$t"; else echo "test inconnu : $t (${ALL[*]})"; FAIL=$((FAIL + 1)); fi
 done

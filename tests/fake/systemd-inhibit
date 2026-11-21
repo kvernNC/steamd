@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
 echo "INHIBIT $*" >>"$FAKE/events"
+# PID gardé par exec : distingue ce verrou de ceux de la vraie machine
+echo $$ >"$FAKE/inhibit.pid"
 while [[ ${1:-} == --* ]]; do shift; done
 exec "$@"

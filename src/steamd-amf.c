@@ -10,7 +10,7 @@
  *   InitVulkan(NULL), en patchant la vtable exportée de AMFContextImpl. Le device
  *   Vulkan (RADV) suffit : un échec d'OpenCL (pas d'OpenCL AMD) est masqué.
  *
- *   STEAMD_AMF_DIR=dossier  dossier de libamfrt64 sur l'hôte (/usr/lib)
+ *   STEAMD_AMF_DIR=d1:d2    dossiers de libamfrt64 et libamdenc64 sur l'hôte (/usr/lib)
  *   STEAMD_AMF_DEBUG=1      journal sur stderr
  */
 #define _GNU_SOURCE
@@ -54,27 +54,31 @@ static void *real_dlopen(const char *name, int flags)
     return next ? next(name, flags) : NULL;
 }
 
-/* Premier fichier name* du dossier d'AMF, vu du conteneur puis tel quel */
+/* Premier fichier name* des dossiers d'AMF, vus du conteneur puis tels quels */
 static void *open_amf(const char *name, int flags)
 {
     static const char *const roots[] = { "/run/host", "" };
-    const char *dir = getenv("STEAMD_AMF_DIR");
-    if (!dir || !*dir)
-        dir = "/usr/lib";
-    for (size_t r = 0; r < sizeof(roots) / sizeof(*roots); r++) {
-        char pattern[512];
-        glob_t g;
-        snprintf(pattern, sizeof(pattern), "%s%s/%s*", roots[r], dir, name);
-        if (glob(pattern, 0, NULL, &g) != 0)
-            continue;
-        void *h = NULL;
-        for (size_t i = 0; i < g.gl_pathc && !h; i++)
-            h = real_dlopen(g.gl_pathv[i], flags);
-        if (!h)
-            LOG("%s : %s\n", g.gl_pathv[0], dlerror());
-        globfree(&g);
-        if (h)
-            return h;
+    const char *dirs = getenv("STEAMD_AMF_DIR");
+    if (!dirs || !*dirs)
+        dirs = "/usr/lib";
+    for (const char *dir = dirs; *dir;) {
+        size_t len = strcspn(dir, ":");
+        for (size_t r = 0; r < sizeof(roots) / sizeof(*roots); r++) {
+            char pattern[512];
+            glob_t g;
+            snprintf(pattern, sizeof(pattern), "%s%.*s/%s*", roots[r], (int)len, dir, name);
+            if (glob(pattern, 0, NULL, &g) != 0)
+                continue;
+            void *h = NULL;
+            for (size_t i = 0; i < g.gl_pathc && !h; i++)
+                h = real_dlopen(g.gl_pathv[i], flags);
+            if (!h)
+                LOG("%s : %s\n", g.gl_pathv[0], dlerror());
+            globfree(&g);
+            if (h)
+                return h;
+        }
+        dir += len + (dir[len] == ':');
     }
     return NULL;
 }

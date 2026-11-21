@@ -7,6 +7,7 @@
 #   --profiles             profils d'affichage (défaut + CLIENT_PROFILES) et profil actif
 #   --profile NOM          demande un profil (default ou première IP d'une entrée), appliqué hors partie
 #   --profile-for IP...    nom du profil d'une de ces IP (utilisé par steamd-profiled)
+#   --amf-path             runtime AMF trouvé (libamfrt64.so.1), ou paquet à installer (code 1)
 set -euo pipefail
 
 CONF="${XDG_CONFIG_HOME:-$HOME/.config}/steamd/steamd.conf"
@@ -138,7 +139,40 @@ print_profile() {
 }
 fps_of() { if [[ $1 == auto ]]; then echo "$P_R"; else echo "$1"; fi; }
 
+# Runtime AMF de l'hôte (AMF_ENCODER) : cache de ld.so, puis emplacements des paquets d'AMD,
+# qui ne le déclarent pas toujours à ld.so
+AMF_DIRS=${STEAMD_AMF_DIRS:-/usr/lib /usr/lib64 /usr/lib/x86_64-linux-gnu /opt/amdgpu-pro/lib64 /opt/amdgpu-pro/lib/x86_64-linux-gnu /opt/amdgpu/lib64 /opt/amdgpu/lib/x86_64-linux-gnu}
+find_amf_lib() {
+    local f d
+    f=$(${STEAMD_LDCONFIG:-ldconfig} -p 2>/dev/null | awk -v n="$1" '$1 == n && /x86-64/ {print $NF; exit}')
+    if [[ -n $f && -e $f ]]; then echo "$f"; return 0; fi
+    for d in $AMF_DIRS; do
+        if [[ -e $d/$1 ]]; then echo "$d/$1"; return 0; fi
+    done
+    return 1
+}
+find_amf() {
+    if [[ -n ${STEAMD_AMF_RT:-} ]]; then [[ -e $STEAMD_AMF_RT ]] && echo "$STEAMD_AMF_RT"; return; fi
+    find_amf_lib libamfrt64.so.1
+}
+# Paquet du runtime AMF selon la distribution
+amf_hint() {
+    local ID="" ID_LIKE=""
+    # shellcheck source=/dev/null
+    [[ -r ${STEAMD_OS_RELEASE:-/etc/os-release} ]] && source "${STEAMD_OS_RELEASE:-/etc/os-release}"
+    case " $ID $ID_LIKE " in
+        *" arch "*)                echo "paquet AUR amf-amdgpu-pro" ;;
+        *" ubuntu "*|*" debian "*) echo "pilote AMD pour Ubuntu : amdgpu-install --usecase=amf" ;;
+        *" fedora "*|*" rhel "*|*" suse "*) echo "dépôt AMD (amdgpu-install --usecase=amf), paquet amf-amdgpu-pro" ;;
+        *)                         echo "runtime AMF d'AMD (paquet amf-amdgpu-pro de son pilote)" ;;
+    esac
+}
+
 case ${1:-} in
+    --amf-path)
+        if find_amf; then exit 0; fi
+        echo "libamfrt64.so.1 introuvable : $(amf_hint)" >&2
+        exit 1 ;;
     --profiles)
         check_profiles
         default_profile; print_profile
@@ -163,13 +197,14 @@ esac
 STEAMCFG="$(dirname "$(readlink -f "$0")")/steamd-steamcfg"
 STEAMD_HOME=$(readlink -m "$STEAMD_HOME")
 
-# Bibliothèque de contrôle de débit VA-API (src/steamd-vaapi.c), cherchée avant le changement de HOME
+# Bibliothèques LD_PRELOAD (src/), cherchées avant le changement de HOME
+SYSLIBDIR=${STEAMD_SYSLIBDIR:-/usr/lib/steamd}
 vaapi_lib=""
-for f in "${XDG_DATA_HOME:-$HOME/.local/share}/steamd/libsteamd-vaapi.so" /usr/lib/steamd/libsteamd-vaapi.so; do
+for f in "${XDG_DATA_HOME:-$HOME/.local/share}/steamd/libsteamd-vaapi.so" "$SYSLIBDIR/libsteamd-vaapi.so"; do
     [[ -r $f ]] && { vaapi_lib=$f; break; }
 done
 amf_lib=""
-for f in "${XDG_DATA_HOME:-$HOME/.local/share}/steamd/libsteamd-amf.so" /usr/lib/steamd/libsteamd-amf.so; do
+for f in "${XDG_DATA_HOME:-$HOME/.local/share}/steamd/libsteamd-amf.so" "$SYSLIBDIR/libsteamd-amf.so"; do
     [[ -r $f ]] && { amf_lib=$f; break; }
 done
 
@@ -307,15 +342,21 @@ fi
 
 # Encodeur AMF de Steam, seul chemin AV1 sur GPU AMD (src/steamd-amf.c)
 if [[ $AMF_ENCODER == true ]]; then
-    amf_rt=${STEAMD_AMF_RT:-$(ldconfig -p 2>/dev/null | awk '$1 == "libamfrt64.so.1" {print $NF; exit}')}
+    amf_rt=$(find_amf) || amf_rt=""
     if [[ -z $amf_lib ]]; then
         log "AMF_ENCODER : libsteamd-amf.so introuvable (réinstaller steamd)"
-    elif [[ -z $amf_rt || ! -e $amf_rt ]]; then
-        log "AMF_ENCODER : AMF absent (libamfrt64.so.1, paquet amf-amdgpu-pro), encodeur VA-API"
+    elif [[ -z $amf_rt ]]; then
+        log "AMF_ENCODER : AMF absent (libamfrt64.so.1 ; $(amf_hint)), encodeur VA-API"
     else
+        # libamdenc64 est d'ordinaire à côté de libamfrt64
+        amf_dirs=${amf_rt%/*}
+        if amf_enc=$(find_amf_lib libamdenc64.so.1.0) && [[ ${amf_enc%/*} != "$amf_dirs" ]]; then
+            amf_dirs+=":${amf_enc%/*}"
+        fi
+        log "AMF : $amf_rt"
         install -Dm644 "$amf_lib" "$HOME/.local/lib/steamd/libsteamd-amf.so"
         export LD_PRELOAD="$HOME/.local/lib/steamd/libsteamd-amf.so${LD_PRELOAD:+:$LD_PRELOAD}"
-        export STEAMD_AMF_DIR=${amf_rt%/*} STEAMD_AMF_DEBUG=1
+        export STEAMD_AMF_DIR=$amf_dirs STEAMD_AMF_DEBUG=1
         if [[ $ENCODER == software ]]; then log "AMF_ENCODER sans effet avec ENCODER=software"; fi
     fi
 fi
