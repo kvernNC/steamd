@@ -93,6 +93,13 @@ if [[ ${VAAPI_STRICT_RC:-false} == true ]]; then
     check "libsteamd-vaapi chargée dans Steam (VAAPI_STRICT_RC)" "le runtime Steam a peut-être retiré LD_PRELOAD : journalctl --user -u steamd | grep steamd-vaapi" \
         grep -q libsteamd-vaapi "/proc/${sp:-0}/maps"
 fi
+if [[ ${AMF_ENCODER:-false} == true ]]; then
+    sp=$(pgrep -u "$UID" -x steam | head -n1)
+    check "AMF installé (AMF_ENCODER)" "paquet amf-amdgpu-pro (AUR sur Arch, amdgpu-install --usecase=amf sur Ubuntu)" \
+        bash -c 'ldconfig -p | grep -q "libamfrt64.so.1 "'
+    check "libsteamd-amf et AMF chargés dans Steam (AMF_ENCODER)" "journalctl --user -u steamd | grep steamd-amf" \
+        bash -c 'grep -q libsteamd-amf "/proc/$1/maps" && grep -q libamfrt64 "/proc/$1/maps"' _ "${sp:-0}"
+fi
 
 echo "== Jeux de Steam headless"
 if [[ $STREAM_TUNING == true ]]; then

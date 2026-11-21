@@ -11,7 +11,7 @@ set -euo pipefail
 
 CONF="${XDG_CONFIG_HOME:-$HOME/.config}/steamd/steamd.conf"
 WIDTH=1280 HEIGHT=800 REFRESH=60 STEAM_CAPTURE=pipewire-dmabuf
-GAMESCOPE_EXTRA_ARGS="" STEAM_EXTRA_ARGS="" ENCODER="" VAAPI_STRICT_RC=false
+GAMESCOPE_EXTRA_ARGS="" STEAM_EXTRA_ARGS="" ENCODER="" VAAPI_STRICT_RC=false AMF_ENCODER=false
 AUDIO_ISOLATE=false AUDIO_SINK=steamd
 APP_WIDTH="" APP_HEIGHT="" HDR=false
 CLIENT_PROFILES=()
@@ -117,6 +117,7 @@ check_profiles() {
     [[ $NETWORK_WAIT == 0 ]] || valid_num "$NETWORK_WAIT" || { log "NETWORK_WAIT invalide : « $NETWORK_WAIT » (secondes, 0 = pas d'attente)"; exit 2; }
     [[ $HDR == true || $HDR == false ]] || { log "HDR invalide dans $CONF : « $HDR » (true ou false)"; exit 2; }
     [[ $STREAM_TUNING == true || $STREAM_TUNING == false ]] || { log "STREAM_TUNING invalide : « $STREAM_TUNING » (true ou false)"; exit 2; }
+    [[ $AMF_ENCODER == true || $AMF_ENCODER == false ]] || { log "AMF_ENCODER invalide : « $AMF_ENCODER » (true ou false)"; exit 2; }
     [[ $FPS_LIMIT == auto || $FPS_LIMIT == 0 ]] || valid_num "$FPS_LIMIT" || { log "FPS_LIMIT invalide : « $FPS_LIMIT » (auto, 0 ou un entier)"; exit 2; }
     [[ $FPS_LIMIT_METHOD == mangohud || $FPS_LIMIT_METHOD == dxvk ]] || { log "FPS_LIMIT_METHOD invalide : « $FPS_LIMIT_METHOD » (mangohud ou dxvk)"; exit 2; }
     [[ $FPS_LIMIT_TIMING == late || $FPS_LIMIT_TIMING == early ]] || { log "FPS_LIMIT_TIMING invalide : « $FPS_LIMIT_TIMING » (late ou early)"; exit 2; }
@@ -166,6 +167,10 @@ STEAMD_HOME=$(readlink -m "$STEAMD_HOME")
 vaapi_lib=""
 for f in "${XDG_DATA_HOME:-$HOME/.local/share}/steamd/libsteamd-vaapi.so" /usr/lib/steamd/libsteamd-vaapi.so; do
     [[ -r $f ]] && { vaapi_lib=$f; break; }
+done
+amf_lib=""
+for f in "${XDG_DATA_HOME:-$HOME/.local/share}/steamd/libsteamd-amf.so" /usr/lib/steamd/libsteamd-amf.so; do
+    [[ -r $f ]] && { amf_lib=$f; break; }
 done
 
 # Environnement du Steam du bureau, pour le fermer après le changement de HOME
@@ -297,6 +302,21 @@ if [[ $VAAPI_STRICT_RC == true ]]; then
         export LD_PRELOAD="$HOME/.local/lib/steamd/libsteamd-vaapi.so${LD_PRELOAD:+:$LD_PRELOAD}"
         export STEAMD_VA_FPS=$P_R STEAMD_VA_DEBUG=1
         if [[ $ENCODER == software ]]; then log "VAAPI_STRICT_RC sans effet avec ENCODER=software"; fi
+    fi
+fi
+
+# Encodeur AMF de Steam, seul chemin AV1 sur GPU AMD (src/steamd-amf.c)
+if [[ $AMF_ENCODER == true ]]; then
+    amf_rt=${STEAMD_AMF_RT:-$(ldconfig -p 2>/dev/null | awk '$1 == "libamfrt64.so.1" {print $NF; exit}')}
+    if [[ -z $amf_lib ]]; then
+        log "AMF_ENCODER : libsteamd-amf.so introuvable (réinstaller steamd)"
+    elif [[ -z $amf_rt || ! -e $amf_rt ]]; then
+        log "AMF_ENCODER : AMF absent (libamfrt64.so.1, paquet amf-amdgpu-pro), encodeur VA-API"
+    else
+        install -Dm644 "$amf_lib" "$HOME/.local/lib/steamd/libsteamd-amf.so"
+        export LD_PRELOAD="$HOME/.local/lib/steamd/libsteamd-amf.so${LD_PRELOAD:+:$LD_PRELOAD}"
+        export STEAMD_AMF_DIR=${amf_rt%/*} STEAMD_AMF_DEBUG=1
+        if [[ $ENCODER == software ]]; then log "AMF_ENCODER sans effet avec ENCODER=software"; fi
     fi
 fi
 

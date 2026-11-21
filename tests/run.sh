@@ -155,6 +155,24 @@ t_vaapi_env() {
     rm -f "$HOME/.local/share/steamd/libsteamd-vaapi.so"
 }
 
+t_amf_env() {
+    echo "== AMF_ENCODER : préchargement"
+    export STEAMD_AMF_RT=$FAKE/amf/libamfrt64.so.1
+    mkdir -p "$HOME/.local/share/steamd" && echo fausse >"$HOME/.local/share/steamd/libsteamd-amf.so"
+    reset "ENCODER=hardware" "AMF_ENCODER=true"
+    launch
+    check "AMF absent : avertissement, Steam lancé sans préchargement" 'grep -q "AMF absent" "$FAKE/launch.out" && [[ -e $FAKE/gamescope.out ]] && ! grep -q "^ENV LD_PRELOAD=.*libsteamd-amf" "$FAKE/gamescope.out"'
+    mkdir -p "$FAKE/amf" && touch "$STEAMD_AMF_RT"
+    launch
+    check "copiée sous STEAMD_HOME et préchargée" '[[ -e $SD/.local/lib/steamd/libsteamd-amf.so ]] && grep -q "^ENV LD_PRELOAD=$SD/.local/lib/steamd/libsteamd-amf.so" "$FAKE/gamescope.out"'
+    check "dossier d'AMF transmis" 'grep -qx "ENV STEAMD_AMF_DIR=$FAKE/amf" "$FAKE/gamescope.out"'
+    reset "AMF_ENCODER=oui"
+    launch
+    check "valeur invalide : code 2" '[[ $(code) == 2 ]]'
+    rm -rf "$HOME/.local/share/steamd/libsteamd-amf.so" "$FAKE/amf"
+    unset STEAMD_AMF_RT
+}
+
 t_audio() {
     echo "== AUDIO_ISOLATE"
     reset "AUDIO_ISOLATE=true"
@@ -317,7 +335,7 @@ t_vaapi() {
     check "HRD d'une image à 90 i/s (fréquence transmise)" '[[ $(grep -c "pilote HRD=200000 plein=150000" "$b/avec.out") == 2 ]]'
 }
 
-ALL=(launch config profiles tuning encoder vaapi_env audio steamcfg profiled game desktop vaapi)
+ALL=(launch config profiles tuning encoder vaapi_env amf_env audio steamcfg profiled game desktop vaapi)
 for t in "${@:-${ALL[@]}}"; do
     if declare -F "t_$t" >/dev/null; then "t_$t"; else echo "test inconnu : $t (${ALL[*]})"; FAIL=$((FAIL + 1)); fi
 done

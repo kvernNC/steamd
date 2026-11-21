@@ -24,6 +24,11 @@ if cc -O2 -Wall -fPIC -shared -o "$SHARE/libsteamd-vaapi.so" src/steamd-vaapi.c 
 else
     echo "Attention : libsteamd-vaapi.so non compilée (sudo pacman -S gcc libva), VAAPI_STRICT_RC indisponible" >&2
 fi
+if cc -O2 -Wall -fPIC -shared -o "$SHARE/libsteamd-amf.so" src/steamd-amf.c -ldl -lpthread; then
+    echo "→ libsteamd-amf.so compilée (AMF_ENCODER)"
+else
+    echo "Attention : libsteamd-amf.so non compilée (sudo pacman -S gcc), AMF_ENCODER indisponible" >&2
+fi
 
 echo "→ unités dans $UNITS"
 mkdir -p "$UNITS"

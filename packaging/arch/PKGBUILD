@@ -9,18 +9,21 @@ depends=('bash' 'gamescope' 'steam' 'pipewire' 'pipewire-pulse' 'wireplumber' 's
 makedepends=('gcc' 'libva')
 optdepends=('mangohud: FPS_LIMIT par la couche Vulkan (sinon DXVK/VKD3D seulement)'
             'python: STEAM_SETTINGS et steamd-steamcfg'
-            'power-profiles-daemon: GAME_POWER_PROFILE pendant les parties')
+            'power-profiles-daemon: GAME_POWER_PROFILE pendant les parties'
+            'amf-amdgpu-pro: AMF_ENCODER (AV1 sur GPU AMD)')
 backup=()
 install=steamd.install
 
 build() {
     cc $CFLAGS -fPIC -shared $LDFLAGS -o "$srcdir/libsteamd-vaapi.so" "$startdir/../../src/steamd-vaapi.c" -ldl -lpthread
+    cc $CFLAGS -fPIC -shared $LDFLAGS -o "$srcdir/libsteamd-amf.so" "$startdir/../../src/steamd-amf.c" -ldl -lpthread
 }
 
 package() {
     local src="$startdir/../.."
 
     install -Dm755 "$srcdir/libsteamd-vaapi.so" "$pkgdir/usr/lib/steamd/libsteamd-vaapi.so"
+    install -Dm755 "$srcdir/libsteamd-amf.so" "$pkgdir/usr/lib/steamd/libsteamd-amf.so"
     install -Dm755 -t "$pkgdir/usr/bin" \
         "$src"/bin/steamd-{launch,doctor,setup,profiled,steamcfg,probe}
 

@@ -52,6 +52,7 @@ ENCODER=""                      # hardware | software (x264) | vide = réglage d
 AUDIO_ISOLATE=false             # true : sortie audio dédiée, le stream n'a plus le son du bureau et le PC reste muet
 #AUDIO_SINK=steamd              # nom de cette sortie
 VAAPI_STRICT_RC=false           # true (recommandé sur GPU AMD, avec ENCODER=hardware) : CBR et tampon d’une image, comme Sunshine
+AMF_ENCODER=false               # true (GPU AMD, ENCODER=hardware) : encodeur AMF de Steam, le seul qui fait de l’AV1 (amf-amdgpu-pro requis)
 NETWORK_WAIT=90                 # au boot, attente du réseau avant Steam (s) ; 0 = pas d'attente
 DESKTOP_STEAM=quit              # quit : ferme au boot le Steam du bureau, qui prendrait le port 27036 ; keep : le laisser
 # HOME dédié du client Steam de steamd (distinct du Steam du bureau)

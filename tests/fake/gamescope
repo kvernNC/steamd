@@ -2,5 +2,5 @@
 # Faux gamescope : note la commande et l'environnement utile, puis rend la main
 {
     echo "ARGS $*"
-    env | grep -E '^(HOME|LD_PRELOAD|STEAMD_VA_[A-Z]+|PULSE_SINK|PULSE_SOURCE)=' | sed 's/^/ENV /'
+    env | grep -E '^(HOME|LD_PRELOAD|STEAMD_VA_[A-Z]+|STEAMD_AMF_[A-Z]+|PULSE_SINK|PULSE_SOURCE)=' | sed 's/^/ENV /'
 } >"$FAKE/gamescope.out"
